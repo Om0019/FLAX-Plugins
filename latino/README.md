@@ -37,21 +37,32 @@ reimplemented in the single file `providers/sololatino.js`, using Promise
 chains instead of async/await and hand-written base64 helpers instead of
 `Buffer`.
 
-**embed69 links currently resolve to nothing.** `src/unpacker.js` decrypts
-embed69's player links with AES-256-CBC, keyed by a SHA-256 proof-of-work —
-real cryptographic primitives that need `crypto`, which this sandbox doesn't
-have. In testing, embed69 is presently SoloLatino's main working source (the
-addon's other player, pelisserieshoy, was returning no working servers at
-scrape time regardless of this port). Filemoon (AES-GCM, and per the
-original code's own findings gated behind a captcha on nearly every file
-anyway) and the Pelisplus mirrors (AES-CBC) are stubbed out for the same
-reason. Everything else from `src/unpacker.js` — Dean Edwards `eval`
-unpacking, VOE, Dood, Streamtape, Nupload, MediaFire, VidGuard, Xupalace
-multi-server pages, JS-redirect and iframe chasing — is ported and working.
+**embed69 is implemented, from scratch, in pure JS.** `src/unpacker.js`
+decrypts embed69's player links with AES-256-CBC, keyed by a SHA-256
+proof-of-work — real cryptographic primitives that need `crypto`, which this
+sandbox doesn't have (and `node-forge`-style libraries fail here too, since
+they still assume a Node/browser environment). `providers/sololatino.js`
+implements both SHA-256 and AES-256 decrypt from their definitions — the AES
+S-box is generated from its algebraic definition (GF(2^8) multiplicative
+inverse + the standard affine map) rather than transcribed from a 256-entry
+table — and verified against Node's own `crypto` before being wired in:
+SHA-256 against empty/short/long/unicode input and 200 randomized strings;
+AES-256-CBC against 100 randomized encrypt-with-Node/decrypt-with-this
+round-trips, plus the exact `IV‖ciphertext`/base64 shape embed69 uses,
+end-to-end through a synthetic embed69 page. The proof-of-work search runs
+in chunks, yielding via a microtask hop between them so it doesn't fully
+monopolise the JS thread, and is capped (difficulty 5, 8s) rather than
+attempted unbounded — the cap is lower than the original addon's, since a
+pure-JS hash is measured at roughly a third of native `crypto`'s throughput
+in this environment.
 
-Next step to make this fully functional: a pure-JS AES-CBC decrypt + SHA-256
-implementation (no external deps allowed in the sandbox) to un-stub
-`decryptEmbed69`/`resolvePelisplus` in `providers/sololatino.js`.
+Filemoon (AES-GCM, and per the original code's own findings gated behind a
+captcha on nearly every file anyway) and the Pelisplus mirrors (a different
+AES-CBC key/API shape) remain stubbed — implementing either would follow the
+same pattern as embed69 above. Everything else from `src/unpacker.js` — Dean
+Edwards `eval` unpacking, VOE, Dood, Streamtape, Nupload, MediaFire,
+VidGuard, Xupalace multi-server pages, JS-redirect and iframe chasing — is
+ported and working.
 
 ## Build step
 
