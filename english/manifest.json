@@ -1,20 +1,7 @@
 {
   "name": "English Nuvio Providers",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "scrapers": [
-    {
-      "id": "Diag",
-      "name": "DIAGNOSTIC (temporary, remove me)",
-      "description": "Not a real stream source. Runs environment/network checks (fetch, AbortController, cheerio module resolution, TMDB reachability with both keys in use, AIOStreams reachability, sololatino reachability) and reports each result as a fake, non-playable stream title so it's readable from the app itself. Select this for any movie to see the results as a list. Remove this entry and providers/diag.js once the real AIOStreams/latino issue is diagnosed.",
-      "version": "1.0.0",
-      "author": "Diagnostic tool",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/diag.js",
-      "enabled": true,
-      "formats": ["mp4", "mkv"],
-      "logo": "",
-      "contentLanguage": ["en"]
-    },
     {
       "id": "VidEasy",
       "name": "VidEasy",

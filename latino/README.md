@@ -1,14 +1,13 @@
-# Nuvio addon (SoloLatino)
+# Nuvio addon (Latino)
 
 A [Nuvio Streams](https://github.com/tapframe/NuvioStreamingApp) local-scraper
-port of this repo's SoloLatino source, kept as a separate, independent addon
-in this repo — it does not touch or depend on `src/`, `index.js`, or the
-Stremio addon at the repo root.
+port of the Latino Stremio addon's ten Spanish-language sources, kept as a
+separate, independent addon in this repo.
 
 ## What this is
 
 Nuvio's local-scraper model is different from Stremio's: there's no server
-and no manifest HTTP endpoint. Nuvio loads `providers/sololatino.js` directly
+and no manifest HTTP endpoint. Nuvio loads each `providers/*.js` directly
 and calls `getStreams(tmdbId, mediaType, seasonNum, episodeNum)` on it, which
 must return a Promise resolving to an array of stream objects. `manifest.json`
 here is a *repository* manifest — the thing you point Nuvio's Settings →
@@ -20,8 +19,12 @@ In the Nuvio app: Settings → Local Scrapers → add repository URL pointing at
 this folder's raw `manifest.json`, e.g.
 
 ```
-https://raw.githubusercontent.com/om0019/latino/<branch>/nuvio-addon/manifest.json
+https://raw.githubusercontent.com/Om0019/FLAX-Plugins/main/latino/manifest.json
 ```
+
+(The English providers are a separate repository entry:
+`https://raw.githubusercontent.com/Om0019/FLAX-Plugins/main/english/manifest.json`.
+Adding one does not add the other.)
 
 ## Scope and known limitation
 
@@ -52,12 +55,9 @@ implementation (no external deps allowed in the sandbox) to un-stub
 
 ## Build step
 
-`src/providers/*.js` are the hand-authored, readable sources. Nuvio's sandbox
-runs on Hermes targeting ES2016, which does not understand object spread
-(`{...x}`, ES2018) or optional chaining/nullish coalescing (`?.`/`??`,
-ES2020) -- both used throughout these files -- so the versions actually
-loaded by Nuvio live in `providers/*.js`, built from `src/providers/*.js`
-with:
+`src/providers/*.js` are the hand-authored, readable sources. Nuvio's
+sandbox targets ES2016, so the versions actually loaded by Nuvio live in
+`providers/*.js`, built from `src/providers/*.js` with:
 
 ```
 npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/<name>.js > providers/<name>.js
@@ -66,12 +66,27 @@ npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers
 Edit `src/providers/<name>.js`, then rebuild before committing -- never
 hand-edit `providers/<name>.js` directly, it will be overwritten.
 
-## Porting the other scrapers
+## Testing
 
-Only `sololatino.js` has been ported so far, as a proof of concept. The repo
-has eight more sources under `src/scrapers/` (cuevana3i, cinecalidad,
-cinehdplus, tioplus, lamovie, pelispedia, tlnovelas, novelas360, ennovelas) —
-each would follow the same pattern: pull in only what that scraper needs from
-`src/scrapers/common.js` and `src/unpacker.js`, convert async/await to
-Promise chains, and export `getStreams`, then add an entry to
-`manifest.json`.
+Plain `node providers/<name>.js` is not a sufficient test -- Node has
+timers and a signal-honouring fetch, so a provider that cannot run in
+Nuvio still passes locally. Use the sandbox harness at the repo root,
+which omits the timer globals the app also lacks:
+
+```
+node tools/run-in-sandbox.js latino/providers/cuevana3i.js 603 movie
+node tools/run-in-sandbox.js latino/providers/tlnovelas.js 31586 tv 1 1
+```
+
+See the root README for the full list of what the sandbox does and
+doesn't provide.
+
+## Adding another scraper
+
+All ten sources from the Stremio addon are ported: sololatino, cuevana3i,
+cinecalidad, cinehdplus, tioplus, lamovie, pelispedia, tlnovelas,
+novelas360 and ennovelas. Anything new follows the same pattern — pull in
+only what that scraper needs from the addon's `src/scrapers/common.js` and
+`src/unpacker.js`, convert async/await to Promise chains, export
+`getStreams`, guard any timer use (see the root README), build it, then
+add an entry to `manifest.json`.
