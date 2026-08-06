@@ -65,35 +65,49 @@ function authHeader() {
 }
 
 // ---------------------------------------------------------------------------
-// http helpers (fetch + timeout/abort, no Node `http` module)
+// http helpers (fetch + timeout, no Node `http` module)
 // ---------------------------------------------------------------------------
 
-function fetchJsonWithTimeout(url, options, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    fetch(url, { ...options, signal: controller.signal })
-      .then((res) => res.text().then((text) => ({ res, text })))
-      .then(({ res, text }) => {
-        clearTimeout(timeoutId);
-        let data = null;
-        try {
-          data = text ? JSON.parse(text) : null;
-        } catch {
-          data = null;
-        }
-        resolve({ res, data });
-      })
-      .catch((error) => {
-        clearTimeout(timeoutId);
-        if (error && error.name === 'AbortError') {
-          reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
-        } else {
-          reject(error);
-        }
-      });
+// Timeouts are raced, NOT driven by AbortController. Nuvio runs on React
+// Native, whose fetch does not honour an AbortSignal the way Node's does --
+// passing `signal` makes the request fail outright, and since getStreams
+// swallows errors into an empty array, every AbortController-based provider
+// silently returned zero streams on-device while working fine under Node.
+// (Exactly the providers that avoid AbortController are the ones that were
+// observed working in the app.) A raced timeout can't cancel the underlying
+// request, which is an acceptable trade for one that actually completes.
+function fetchWithTimeout(url, options, timeoutMs) {
+  let timeoutId;
+  const timeout = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
+    }, timeoutMs);
   });
+
+  return Promise.race([fetch(url, options), timeout]).then(
+    (res) => {
+      clearTimeout(timeoutId);
+      return res;
+    },
+    (error) => {
+      clearTimeout(timeoutId);
+      throw error;
+    }
+  );
+}
+
+function fetchJsonWithTimeout(url, options, timeoutMs) {
+  return fetchWithTimeout(url, options, timeoutMs)
+    .then((res) => res.text().then((text) => ({ res, text })))
+    .then(({ res, text }) => {
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+      return { res, data };
+    });
 }
 
 // ---------------------------------------------------------------------------

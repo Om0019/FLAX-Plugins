@@ -39,6 +39,32 @@ function safe(promiseFn) {
 function oneLine(text) {
   return String(text).replace(/\s+/g, " ").trim();
 }
+var SIGNAL_PROBE_URL = "https://api.themoviedb.org/3/movie/603/external_ids?api_key=af3fa2d2239e9d0e6c04a1076d3df76f";
+function checkFetchWithSignal() {
+  if (typeof AbortController === "undefined") return Promise.resolve("no AbortController");
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() {
+    controller.abort();
+  }, 2e4);
+  return fetch(SIGNAL_PROBE_URL, { signal: controller.signal }).then(function(res) {
+    return res.text().then(function(text) {
+      clearTimeout(timeoutId);
+      return "OK, HTTP " + res.status + ", " + text.length + " bytes";
+    });
+  }).catch(function(error) {
+    clearTimeout(timeoutId);
+    return "FAILED: name=" + (error && error.name) + " message=" + (error && error.message);
+  });
+}
+function checkFetchWithoutSignal() {
+  return fetch(SIGNAL_PROBE_URL).then(function(res) {
+    return res.text().then(function(text) {
+      return "OK, HTTP " + res.status + ", " + text.length + " bytes";
+    });
+  }).catch(function(error) {
+    return "FAILED: name=" + (error && error.name) + " message=" + (error && error.message);
+  });
+}
 var AIOSTREAMS_BASE_URL = "https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search";
 var AIOSTREAMS_UUID = "4b990cd7-9058-41f6-a099-224272656e63";
 var AIOSTREAMS_PASSWORD = "Jason001$";
@@ -126,7 +152,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     } },
     { name: "real aiostreams flow", fn: function() {
       return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum);
-    } }
+    } },
+    { name: "fetch WITH signal", fn: checkFetchWithSignal },
+    { name: "fetch WITHOUT signal", fn: checkFetchWithoutSignal }
   ];
   return Promise.all(
     checks.map(function(check) {

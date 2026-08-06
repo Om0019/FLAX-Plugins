@@ -17,32 +17,50 @@
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
+// Timeout and any caller-supplied abort signal are raced against the request
+// rather than wired into fetch via `signal`: React Native's fetch, which is
+// what Nuvio runs, does not honour an AbortSignal the way Node's does and the
+// request fails outright when one is passed. See the equivalent note in the
+// other latino providers.
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = options.signal;
+  const { signal, ...fetchOptions } = options;
 
-    const externalSignal = options.signal;
-    const abortFromExternalSignal = () => controller.abort();
+  let timeoutId;
+  let onExternalAbort;
+
+  const deadline = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
+    }, timeoutMs);
+
     if (externalSignal) {
-      if (externalSignal.aborted) controller.abort();
-      else externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true });
+      if (externalSignal.aborted) {
+        reject(new Error(`Fetch aborted: ${url}`));
+      } else {
+        onExternalAbort = () => reject(new Error(`Fetch aborted: ${url}`));
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
     }
-
-    const { signal, ...fetchOptions } = options;
-
-    fetch(url, { ...fetchOptions, signal: controller.signal })
-      .then((res) => {
-        clearTimeout(timeoutId);
-        if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternalSignal);
-        resolve(res);
-      })
-      .catch((error) => {
-        clearTimeout(timeoutId);
-        if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternalSignal);
-        reject(error);
-      });
   });
+
+  function cleanup() {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  return Promise.race([fetch(url, fetchOptions), deadline]).then(
+    (res) => {
+      cleanup();
+      return res;
+    },
+    (error) => {
+      cleanup();
+      throw error;
+    }
+  );
 }
 
 function probe(signal) {

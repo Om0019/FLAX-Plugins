@@ -3,8 +3,6 @@
 //   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/ennovelas.js > latino/providers/ennovelas.js
 // Edit src/providers/ennovelas.js instead, then rebuild.
 var __defProp = Object.defineProperty;
-var __defProps = Object.defineProperties;
-var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __propIsEnum = Object.prototype.propertyIsEnumerable;
@@ -20,7 +18,6 @@ var __spreadValues = (a, b) => {
     }
   return a;
 };
-var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 var __objRest = (source, exclude) => {
   var target = {};
   for (var prop in source)
@@ -124,36 +121,40 @@ function normalizeUrl(value, baseUrl) {
   }
 }
 function fetchWithDeadline(url, options, timeoutMs, consume) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
+  const externalSignal = options.signal;
+  const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
+  let timeoutId;
+  let onExternalAbort;
+  const deadline = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
-    const externalSignal = options.signal;
-    const abortFromExternalSignal = () => controller.abort();
     if (externalSignal) {
-      if (externalSignal.aborted) controller.abort();
-      else externalSignal.addEventListener("abort", abortFromExternalSignal, { once: true });
-    }
-    const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
-    function cleanup() {
-      clearTimeout(timeoutId);
-      if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternalSignal);
-    }
-    fetch(url, __spreadProps(__spreadValues({}, fetchOptions), { signal: controller.signal })).then((res) => Promise.resolve(consume(res))).then((result) => {
-      cleanup();
-      resolve(result);
-    }).catch((error) => {
-      cleanup();
-      if (error && error.name === "AbortError") {
-        reject(new Error(timedOut ? `Fetch timeout after ${timeoutMs}ms: ${url}` : `Fetch aborted: ${url}`));
+      if (externalSignal.aborted) {
+        reject(new Error(`Fetch aborted: ${url}`));
       } else {
-        reject(error);
+        onExternalAbort = () => reject(new Error(`Fetch aborted: ${url}`));
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
       }
-    });
+    }
   });
+  function cleanup() {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+  }
+  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
+  return Promise.race([request, deadline]).then(
+    (result) => {
+      cleanup();
+      return result;
+    },
+    (error) => {
+      cleanup();
+      throw error;
+    }
+  );
 }
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return fetchWithDeadline(url, options, timeoutMs, (res) => res);
