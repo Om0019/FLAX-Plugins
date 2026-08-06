@@ -1671,12 +1671,14 @@ function scoreCandidate(result, title, originalTitle, year, type, extraTitles = 
  * that errors is one name not found, not a reason to abandon the others.
  */
 function runLaMovieQuery(query, title, originalTitle, year, type, userAgent, signal, extraTitles) {
-  const url = new URL(`${LAMOVIE_API_URL}/search`);
-  url.searchParams.set('postType', 'any');
-  url.searchParams.set('q', query);
-  url.searchParams.set('postsPerPage', '10');
+  // Built as a plain string instead of `new URL(base).searchParams.set(...)`:
+  // an on-device diag trail showed the API rejecting an 8-character query
+  // ("Deadpool") as "too short", meaning `q` arrived empty or truncated --
+  // the same server-side request with a manually-built query string works
+  // fine, so this sidesteps whatever Nuvio's URLSearchParams does here.
+  const url = `${LAMOVIE_API_URL}/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=10`;
 
-  return fetchJsonWithTimeout(url.toString(), {
+  return fetchJsonWithTimeout(url, {
     headers: { 'User-Agent': userAgent, Accept: 'application/json' },
     signal
   }, LAMOVIE_SEARCH_TIMEOUT_MS)
@@ -1726,13 +1728,11 @@ function lamovieSearch(title, originalTitle, year, type, userAgent, signal, extr
 function getEpisodePostId(seriesId, season, episode, userAgent, signal) {
   if (!seriesId || !season || !episode) return Promise.resolve(null);
 
-  const url = new URL(`${LAMOVIE_API_URL}/single/episodes/list`);
-  url.searchParams.set('_id', seriesId);
-  url.searchParams.set('season', season);
-  url.searchParams.set('page', '1');
-  url.searchParams.set('postsPerPage', '80');
+  // Built as a plain string; see runLaMovieQuery's search URL for why
+  // `new URL(base).searchParams.set(...)` isn't used to build a fresh query.
+  const url = `${LAMOVIE_API_URL}/single/episodes/list?_id=${encodeURIComponent(seriesId)}&season=${encodeURIComponent(season)}&page=1&postsPerPage=80`;
 
-  return fetchJsonWithTimeout(url.toString(), {
+  return fetchJsonWithTimeout(url, {
     headers: { 'User-Agent': userAgent, Accept: 'application/json' },
     signal
   }, LAMOVIE_EPISODES_TIMEOUT_MS)
@@ -1769,11 +1769,11 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
       return postIdPromise.then((postId) => {
         if (!postId) return [];
 
-        const playerUrl = new URL(`${LAMOVIE_API_URL}/player`);
-        playerUrl.searchParams.set('postId', postId);
-        playerUrl.searchParams.set('demo', '0');
+        // Built as a plain string; see runLaMovieQuery's search URL for why
+        // `new URL(base).searchParams.set(...)` isn't used to build a fresh query.
+        const playerUrl = `${LAMOVIE_API_URL}/player?postId=${encodeURIComponent(postId)}&demo=0`;
 
-        return fetchJsonWithTimeout(playerUrl.toString(), {
+        return fetchJsonWithTimeout(playerUrl, {
           headers: { 'User-Agent': userAgent, Accept: 'application/json', Referer: LAMOVIE_BASE_URL },
           signal
         }, LAMOVIE_PLAYER_TIMEOUT_MS).then(({ res: playerRes, data: playerData }) => {
@@ -1984,11 +1984,8 @@ function diagStream(text) {
 // instead of just "0 raw results" -- which looks identical whether the site
 // said no or the request never reached real content.
 function rawSearchProbe(query) {
-  const url = new URL(`${LAMOVIE_API_URL}/search`);
-  url.searchParams.set('postType', 'any');
-  url.searchParams.set('q', query);
-  url.searchParams.set('postsPerPage', '10');
-  return fetchTextWithTimeout(url.toString(), {
+  const url = `${LAMOVIE_API_URL}/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=10`;
+  return fetchTextWithTimeout(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', Accept: 'application/json' }
   }, LAMOVIE_SEARCH_TIMEOUT_MS)
     .then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, ' ')}"`)

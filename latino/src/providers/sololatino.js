@@ -2252,7 +2252,7 @@ function toNuvioStream(internalStream) {
 // to tap the card -- tapping instead tries to play the (fake) url. So the
 // trail goes in `name`, not `title`.
 function diagStream(text) {
-  const summary = String(text).replace(/\s+/g, ' ').trim().slice(0, 320);
+  const summary = String(text).replace(/\s+/g, ' ').trim().slice(0, 420);
   return {
     name: `⚠️ ${summary}`,
     title: 'SoloLatino diag',
@@ -2271,7 +2271,27 @@ function diagStream(text) {
 function rawSearchProbe(query) {
   const searchUrl = `https://sololatino.net/buscar?q=${encodeURIComponent(query)}`;
   return fetchTextWithTimeout(searchUrl, { headers: browserHeaders('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36') }, SEARCH_TIMEOUT_MS)
-    .then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, ' ')}"`)
+    .then(({ res, text }) => {
+      // performSearch's real HTML got a real-sized 200 response on-device but
+      // still found 0 candidates, which rules out a blocked/interstitial
+      // page -- this counts how many <a> tags cheerio actually sees in that
+      // same body, to tell "device got different/emptier HTML than this
+      // probe" apart from "cheerio-without-node-native parses this
+      // differently than plain cheerio does here".
+      let linkCount = 0;
+      let movieOrSeriesLinkCount = 0;
+      try {
+        const $ = cheerio.load(text);
+        $('a').each((i, el) => {
+          linkCount += 1;
+          const href = $(el).attr('href') || '';
+          if (href.includes('/pelicula/') || href.includes('/serie/')) movieOrSeriesLinkCount += 1;
+        });
+      } catch (parseError) {
+        return `rawProbe: HTTP ${res.status}, ${text.length}b, cheerio.load THREW: ${parseError && parseError.message}`;
+      }
+      return `rawProbe: HTTP ${res.status}, ${text.length}b, ${linkCount} <a> tags (${movieOrSeriesLinkCount} pelicula/serie), starts "${text.slice(0, 40).replace(/\s+/g, ' ')}"`;
+    })
     .catch((error) => `rawProbe: FETCH ERROR ${error && error.message}`);
 }
 
