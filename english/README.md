@@ -23,17 +23,40 @@ this folder's raw `manifest.json`.
 
 ## Patched providers
 
-Three providers ship here with the same source patches the Stremio addon
-applies at load time (`english-addon/src/providers/index.js`), baked in
-statically since Nuvio has no load-time patching mechanism:
+Providers ship here with the same source patches the Stremio addon applies
+at load time (`english-addon/src/providers/index.js`), baked in statically
+since Nuvio has no load-time patching mechanism:
 
 - **Peachify** — per-server timeout cut from 15s to 6s so its three
-  responsive mirrors return before a normal request budget expires.
+  responsive mirrors return before a normal request budget expires. Also
+  fixed a `ReferenceError: window is not defined` crash on every call: the
+  bundled node-forge's global-detection fallback assumed a browser whenever
+  `process`/`self` weren't present, which is exactly this sandbox.
 - **HDHub4u** — its first-result fallback (used when the scorer finds no
   confident match) now requires 75% title-token coverage, fixing wrong
   matches like "P.S. I Love You" for "I Love You Phillip Morris".
 - **Castle** — its title matcher now requires the same 75% token-coverage
-  check instead of a loose substring match.
+  check instead of a loose substring match, and no longer rejects
+  single-word titles outright (the check required at least 2 significant
+  tokens, so "Inception" or "Barbie" could never match anything, full stop).
+
+**Castle and HDHub4u also carry a pure-JS `crypto-js` shim.** Both call
+`require("crypto-js")` for AES-CBC decryption (Castle: its entire API
+response format; HDHub4u: one of its player extractors) — an npm package
+Nuvio's sandbox can't resolve, so it crashed at module-load time for
+HDHub4u (the whole provider failed to register) and on first use for Castle
+(caught, but every call returned zero streams). Both files now start with
+an injected block that reimplements the exact `crypto-js` surface they call
+(`AES.decrypt` in CBC/PKCS7 mode, `WordArray`, and the `Base64`/`Utf8`/`Hex`
+encoders) in pure JS and shadows `require` so their existing
+`require("crypto-js")` calls transparently receive it instead. The AES
+engine itself is the same construction as the Latino embed69 decryptor
+(`latino/src/providers/sololatino.js`), generalized to also support
+AES-128 (the key size these two use), and was verified against the real
+`crypto-js` package for randomized round-trips -- including each file's own
+key-derivation shape -- before being wired in. Confirmed end-to-end against
+the live sites via `tools/run-in-sandbox.js` (both now return real streams
+for movies and TV instead of crashing or returning nothing).
 
 ## Disabled providers
 

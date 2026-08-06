@@ -1,3 +1,320 @@
+/**
+ * Pure-JS crypto-js shim -- Nuvio's sandbox has no npm module resolution, so
+ * require("crypto-js") crashes here (confirmed via the sandbox harness at
+ * tools/run-in-sandbox.js: it throws at module-load time, before getStreams
+ * is even defined, so the provider never registers). This block
+ * re-implements the exact subset of the crypto-js API this file calls --
+ * AES-CBC decrypt with PKCS7 padding, plus the Base64/Utf8/Hex WordArray
+ * helpers -- verified against the real crypto-js package for randomized
+ * round-trips (including this file's own key-derivation shape) before being
+ * wired in, and shadows require() so the rest of this file's existing
+ * require("crypto-js") call transparently receives this instead. Same AES
+ * construction as latino/src/providers/sololatino.js's embed69 decryptor,
+ * generalized to also support AES-128 (the key size these providers use).
+ */
+(function () {
+  "use strict";
+
+  const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+  function base64ToBytes(b64) {
+    const clean = String(b64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+    const bytes = [];
+    let buffer = 0, bits = 0;
+    for (let i = 0; i < clean.length; i += 1) {
+      const c = clean[i];
+      if (c === '=') break;
+      const val = BASE64_CHARS.indexOf(c);
+      if (val === -1) continue;
+      buffer = (buffer << 6) | val;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes.push((buffer >> bits) & 0xff);
+      }
+    }
+    return bytes;
+  }
+
+  function hexToBytes(hex) {
+    const clean = String(hex || '').replace(/[^0-9a-fA-F]/g, '');
+    const bytes = [];
+    for (let i = 0; i + 1 < clean.length; i += 2) bytes.push(parseInt(clean.substr(i, 2), 16));
+    return bytes;
+  }
+
+  function bytesToHex(bytes) {
+    return bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function stringToUtf8Bytes(str) {
+    const bytes = [];
+    for (let i = 0; i < str.length; i += 1) {
+      let code = str.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+        const next = str.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+          i += 1;
+        }
+      }
+      if (code < 0x80) {
+        bytes.push(code);
+      } else if (code < 0x800) {
+        bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      } else if (code < 0x10000) {
+        bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      } else {
+        bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      }
+    }
+    return bytes;
+  }
+
+  function bytesToUtf8String(bytes) {
+    let out = '';
+    let i = 0;
+    while (i < bytes.length) {
+      const b0 = bytes[i++];
+      if (b0 < 0x80) {
+        out += String.fromCharCode(b0);
+      } else if (b0 >= 0xc0 && b0 < 0xe0 && i < bytes.length) {
+        const b1 = bytes[i++];
+        out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
+      } else if (b0 >= 0xe0 && b0 < 0xf0 && i + 1 < bytes.length) {
+        const b1 = bytes[i++], b2 = bytes[i++];
+        out += String.fromCharCode(((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f));
+      } else if (b0 >= 0xf0 && i + 2 < bytes.length) {
+        const b1 = bytes[i++], b2 = bytes[i++], b3 = bytes[i++];
+        let codepoint = ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+        codepoint -= 0x10000;
+        out += String.fromCharCode(0xd800 + (codepoint >> 10), 0xdc00 + (codepoint & 0x3ff));
+      } else {
+        out += String.fromCharCode(b0);
+      }
+    }
+    return out;
+  }
+
+  function gmul(a, b) {
+    let p = 0, x = a, y = b;
+    for (let i = 0; i < 8; i += 1) {
+      if (y & 1) p ^= x;
+      const hiBitSet = x & 0x80;
+      x = (x << 1) & 0xff;
+      if (hiBitSet) x ^= 0x1b;
+      y >>= 1;
+    }
+    return p;
+  }
+
+  function buildAesTables() {
+    const inv = new Array(256).fill(0);
+    for (let a = 1; a < 256; a += 1) {
+      for (let b = 1; b < 256; b += 1) {
+        if (gmul(a, b) === 1) { inv[a] = b; break; }
+      }
+    }
+    const rotl8 = (v, n) => ((v << n) | (v >>> (8 - n))) & 0xff;
+    const sbox = new Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      const x = inv[i];
+      sbox[i] = x ^ rotl8(x, 1) ^ rotl8(x, 2) ^ rotl8(x, 3) ^ rotl8(x, 4) ^ 0x63;
+    }
+    const invSbox = new Array(256);
+    for (let i = 0; i < 256; i += 1) invSbox[sbox[i]] = i;
+    return { sbox, invSbox };
+  }
+
+  const AES_TABLES = buildAesTables();
+  const AES_SBOX = AES_TABLES.sbox;
+  const AES_INV_SBOX = AES_TABLES.invSbox;
+  const AES_RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d];
+
+  /** Generalized AES key expansion: works for Nk=4/6/8 (AES-128/192/256). */
+  function aesKeyExpansion(key) {
+    const Nk = key.length / 4;
+    const Nr = Nk + 6;
+    const Nb = 4;
+    const w = [];
+    for (let i = 0; i < Nk; i += 1) w.push([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+    for (let i = Nk; i < Nb * (Nr + 1); i += 1) {
+      let temp = w[i - 1].slice();
+      if (i % Nk === 0) {
+        temp = [temp[1], temp[2], temp[3], temp[0]].map((b) => AES_SBOX[b]);
+        temp[0] ^= AES_RCON[i / Nk - 1];
+      } else if (Nk > 6 && i % Nk === 4) {
+        temp = temp.map((b) => AES_SBOX[b]);
+      }
+      w.push(w[i - Nk].map((b, idx) => b ^ temp[idx]));
+    }
+    return { w, Nr };
+  }
+
+  function addRoundKey(state, w, round) {
+    for (let c = 0; c < 4; c += 1) for (let r = 0; r < 4; r += 1) state[r][c] ^= w[round * 4 + c][r];
+  }
+  function invSubBytes(state) {
+    for (let r = 0; r < 4; r += 1) for (let c = 0; c < 4; c += 1) state[r][c] = AES_INV_SBOX[state[r][c]];
+  }
+  function invShiftRows(state) {
+    for (let r = 1; r < 4; r += 1) {
+      const row = state[r];
+      state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r));
+    }
+  }
+  function invMixColumns(state) {
+    for (let c = 0; c < 4; c += 1) {
+      const a0 = state[0][c], a1 = state[1][c], a2 = state[2][c], a3 = state[3][c];
+      state[0][c] = gmul(a0, 0x0e) ^ gmul(a1, 0x0b) ^ gmul(a2, 0x0d) ^ gmul(a3, 0x09);
+      state[1][c] = gmul(a0, 0x09) ^ gmul(a1, 0x0e) ^ gmul(a2, 0x0b) ^ gmul(a3, 0x0d);
+      state[2][c] = gmul(a0, 0x0d) ^ gmul(a1, 0x09) ^ gmul(a2, 0x0e) ^ gmul(a3, 0x0b);
+      state[3][c] = gmul(a0, 0x0b) ^ gmul(a1, 0x0d) ^ gmul(a2, 0x09) ^ gmul(a3, 0x0e);
+    }
+  }
+  function aesDecryptBlock(block, w, Nr) {
+    const state = [[], [], [], []];
+    for (let i = 0; i < 16; i += 1) state[i % 4][(i / 4) | 0] = block[i];
+    addRoundKey(state, w, Nr);
+    for (let round = Nr - 1; round >= 1; round -= 1) {
+      invShiftRows(state); invSubBytes(state); addRoundKey(state, w, round); invMixColumns(state);
+    }
+    invShiftRows(state); invSubBytes(state); addRoundKey(state, w, 0);
+    const out = new Array(16);
+    for (let i = 0; i < 16; i += 1) out[i] = state[i % 4][(i / 4) | 0];
+    return out;
+  }
+  function aesCbcDecrypt(keyBytes, ivBytes, ciphertextBytes) {
+    const { w, Nr } = aesKeyExpansion(keyBytes);
+    const plaintext = [];
+    let prevBlock = ivBytes;
+    for (let offset = 0; offset < ciphertextBytes.length; offset += 16) {
+      const block = ciphertextBytes.slice(offset, offset + 16);
+      const decrypted = aesDecryptBlock(block, w, Nr);
+      for (let i = 0; i < 16; i += 1) plaintext.push(decrypted[i] ^ prevBlock[i]);
+      prevBlock = block;
+    }
+    return plaintext;
+  }
+  /**
+   * castle.js's own key-derivation only ever produces a well-formed 16-byte
+   * key in practice (its >16 branch truncates, its ==16 branch is exact); this
+   * only guards the pathological <16-bytes-of-input case, which castle.js
+   * already treats as a decrypt failure via its own `if (!result) throw`
+   * check, so exact bit-parity with CryptoJS's undefined behaviour there
+   * isn't required -- just that this never throws.
+   */
+  function normalizeAesKeyBytes(bytes) {
+    if (bytes.length >= 32) return bytes.slice(0, 32);
+    if (bytes.length >= 24) return bytes.slice(0, 24);
+    const padded = bytes.slice(0, 16);
+    while (padded.length < 16) padded.push(0);
+    return padded;
+  }
+
+  function stripPkcs7PaddingBytes(bytes) {
+    const pad = bytes[bytes.length - 1];
+    if (!Number.isInteger(pad) || pad < 1 || pad > 16 || pad > bytes.length) return bytes;
+    return bytes.slice(0, bytes.length - pad);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Minimal CryptoJS-compatible shim: only WordArray/enc/AES.decrypt(CBC,Pkcs7),
+  // which is the entire surface castle.js and hdhub4u.js use.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mirrors CryptoJS's actual WordArray representation: `words` is an array of
+   * 32-bit big-endian words, and `create(words, sigBytes)` -- the same method
+   * castle.js calls directly -- treats its first argument as words, not bytes
+   * (sigBytes defaults to words.length*4 when omitted). Verified against the
+   * real crypto-js package's own `WordArray.create` behaviour.
+   */
+  function wordArrayFromWords(words, sigBytes) {
+    words = words ? words.slice() : [];
+    const wa = {
+      words,
+      sigBytes: sigBytes === undefined ? words.length * 4 : sigBytes,
+      toBytes() {
+        const out = [];
+        for (let i = 0; i < wa.sigBytes; i += 1) out.push((wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff);
+        return out;
+      },
+      concat(other) {
+        const combined = wa.toBytes().concat(other.toBytes());
+        return wordArrayFromBytes(combined);
+      },
+      toString(encoder) {
+        const bytes2 = wa.toBytes();
+        if (encoder === CryptoJSPolyfill.enc.Utf8) return bytesToUtf8String(bytes2);
+        return bytesToHex(bytes2);
+      }
+    };
+    return wa;
+  }
+
+  function wordArrayFromBytes(bytes) {
+    const words = [];
+    for (let i = 0; i < bytes.length; i += 4) {
+      words.push(((bytes[i] || 0) << 24) | ((bytes[i + 1] || 0) << 16) | ((bytes[i + 2] || 0) << 8) | (bytes[i + 3] || 0));
+    }
+    return wordArrayFromWords(words, bytes.length);
+  }
+
+  const CryptoJSPolyfill = {
+    lib: {
+      WordArray: {
+        create: (words, sigBytes) => wordArrayFromWords(words, sigBytes)
+      }
+    },
+    enc: {
+      Base64: { parse: (b64) => wordArrayFromBytes(base64ToBytes(b64)) },
+      Utf8: { parse: (str) => wordArrayFromBytes(stringToUtf8Bytes(str)) },
+      Hex: { parse: (hex) => wordArrayFromBytes(hexToBytes(hex)) }
+    },
+    mode: { CBC: 'CBC' },
+    pad: { Pkcs7: 'Pkcs7' },
+    AES: {
+      decrypt(cipherParams, key, options) {
+        const keyBytes = normalizeAesKeyBytes(key.toBytes());
+        let ivBytes = (options && options.iv) ? options.iv.toBytes() : new Array(16).fill(0);
+        ivBytes = ivBytes.slice(0, 16);
+        while (ivBytes.length < 16) ivBytes.push(0);
+        const ciphertextBytes = typeof cipherParams === 'string'
+          ? base64ToBytes(cipherParams)
+          : cipherParams.ciphertext.toBytes();
+        const decrypted = stripPkcs7PaddingBytes(aesCbcDecrypt(keyBytes, ivBytes, ciphertextBytes));
+        return wordArrayFromBytes(decrypted);
+      }
+    }
+  };
+
+
+  var __originalRequire = require;
+  require = function (name) {
+    var mod;
+    try {
+      mod = __originalRequire(name);
+    } catch (e) {
+      return CryptoJSPolyfill;
+    }
+    if (name === 'cheerio-without-node-native' || name === 'cheerio') {
+      // __toESM's lazy-getter property copy (Object.getOwnPropertyNames +
+      // `get: () => from[key]`) doesn't survive contact with the real
+      // cheerio module's own property descriptors here -- the resulting
+      // `.default.load(...)` throws "is not a function" even though
+      // `mod.load` itself works fine when called directly. A flat,
+      // eagerly-copied plain object sidesteps whatever that interaction is
+      // (confirmed via the sandbox harness: raw passthrough fails on every
+      // .load() call site, this doesn't).
+      var flat = {};
+      for (var key in mod) flat[key] = mod[key];
+      return flat;
+    }
+    return mod;
+  };
+})();
+
 function _0x1d41(){const _0x4db01a=['zw5J','n1nlz1L4BW','Cg9ZDf90AhvTyM5HAwW','mtK5nZj3s3fituK','Ahr0Chm6lY9UzxCXlMHKAhvInhuUy2W','DgL0Bgu','mtbqEM54yNi','y2HHCKf0','ChvZAa','Ahr0Chm6lY9HCgKUDgHLBw92AwvKyI5VCMCVmW','Ahr0Chm6lY9YyxCUz2L0AhvIDxnLCMnVBNrLBNqUy29Tl3bOAxnOzxi5oc9uvLzwvI9YzwzZl2HLywrZl21HAw4Vzg9TywLUCY5QC29U','yM9KEq','ndm5yZq3oge3nZfMmZvJmduWmJjMowzLywjJy2eWmwm','p2LKpq','CJiUzgv2','zwfJAa','BwvZC2fNzq','zMLUza','zMLYC3rFywLYx2rHDgu','DxjS','CgL4zwXKCMe','w0HeshvInhvDifrnreiGsw5MBZOGiG','C3rHDhvZvgv4Da','qNL0zxm','mZC5oduXB1z0Bwvf','i2rVD25SB2fK','ieHIBgLUA3m','Dgv4Da','lNPPCa','ttnvoa','seriDwi0Dsa','w0HeshvInhvDiezLDgnOAw5Nihn0CMvHBxmGzM9YifrnreiGsuq6ia','jMfWCgvUzf90B19YzxnWB25Zzt1LEhrLCM5HBf9Pzhm','ywXS','vw5RBM93BG','qvzd','ChjVDg9JB2W','AduGysWGAdqGysWGAdmGyq','sgv4','CgvYBwfSAw5R','C3rHCNrZv2L0Aa','C3bSAxq','q0fn','AM9PBG','BM93','mtu2odaWmdDdugDQq3e','AgrZDhjLyw00Dq','v0vcuKLq','z2v0t3DUuhjVCgvYDhLezxnJCMLWDg9Y','C291CMnL','zMLSzu5HBwu','mZu3mJGZmgz6u1nLqG','Aw1KyL9Pza','Ahr0Chm6lY9ZzwfYy2GUCgLUz29Yys5MEwKVy29SBgvJDgLVBNmVCg9ZDc9KB2n1BwvUDhmVC2vHCMnOp3e9','BwfNBMv0oG','DMfSDwu','Ahr0Ca','EMLWzgLZAW','y3j5ChrVAw5ZAwDODhmUC2L0zq','z2v0','AgfZ','AgfZt3DUuhjVCgvYDhK','sdi2nq','BMv4Da','EwvHCG','w0HeshvInhvDiejLC3qGDgL0BguGBwf0y2G6ici','nZiWCa','iIaO','nJyWmdy0ogLmC0r3vG','p2rVD25SB2fK','lNbHz2uTyM9KEsa+igrPDIbH','u3rYzwfTvgfWzq','sfGTuMvKAxjLy3q','DhjPBq','BwfW','v0vclurm','re9mqLLwsvnjt04','wMLWrgLZAYbtzxj2zxi','shvIq2XVDwqGlsbgu0W','zMXHDa','AhvIy2XVDwqUy3G','w0HeshvInhvDiezHAwXLzcb0BYbMzxrJAcbSyxrLC3qGzg9TywLUCZOG','mdeYmZq1nJC4owfIy2rLzG','C3vIC3rYAw5N','y2HLzxjPBY13AxrOB3v0lw5VzguTBMf0AxzL','DgHYB3C','BgLUAZ0','A2LLBxrPzw5TDwe5mtfJyq','qufd','Cg9ZDf90AxrSzq','shvIq2rU','ChjVCgvYDhLjC0vUDw1LCMfIBgu','BNvTyMvY','ywrK','zNjVBunOyxjdB2rL','ihrVia','serivui0Dq','CxvHBgL0Eq','q0jd','shvIq2XVDwqGlsaXmeDIChmG','CMvWBgfJzq','Dg9mB3DLCKnHC2u','EgXHpxm0Da','qujdrevgr0HjsKTmtu5puffsu1rvvLDywvPHyMnKzwzNAgLQA2XTBM9WCxjZDhv2D3H5EJaXmJm0nty3odKRlZ0','mtu4mda0nhn6yMLUra','x19LC01VzhvSzq','Bwf0y2G','AgL0CW','sgjmAw5RCW','Cg9W','l2rVD25SB2fK','CgfYC2u','zxbPC29Kzq','C29Tzq','Bg9N','z2v0t3DUuhjVCgvYDhLtEw1IB2XZ','BgfZDeLUzgv4t2y','mJiZnJq1oeHyBwv5BW','zgvMAw5LuhjVCgvYDhK','CMvZB2X2zq','zNvUy3rPB24','C2v0','zgvMyxvSDa','rgLYzwn0ifiY','z2v0t3DUuhjVCgvYDhLoyw1LCW','ChjVDg90ExbL','uMvMzxjLCG','C3rHDhvZ','AhGTCMvKAxjLy3q','Aw5JBhvKzxm','AdeUCgfNzs10AxrSzsbZCgfU','CMv1CMW','AsnZAxPL','qLjssva','CZmGC2vYDMvY','w0HeshvInhvDifnLBgvJDgvKoIaI','y2fSBa','ifnLyxnVBIa','mta4mha','yMXVz191CMW','iIaOC2nVCMu6ia','AhvIy2XVDwqUAw5R','mtiZndu2nZG5mg9PDxL0CG','AhrTBa','C3rYAw5N','CMvSzwfZzv9KyxrL','C2L6zq','DgvJAhLIB3K0Dq','l2fWAs92ms92AwrLBZ9Pzd0','C2vHC29Uia','C3rYzwfTDgfWzs5JB20','zw51BwvYywjSzq','lcbuExbLoIa','yxr0CG','shvIq2XVDwq','BgvUz3rO','AhjLzG','vxrMoa','zgvMAw5LuhjVCgvYDgLLCW','tw96AwXSys81lJaGkfDPBMrVD3mGtLqGmtaUmdSGv2LUnJq7ihG2ncKGqxbWBgvxzwjlAxqVntm3lJm2','zNnSDJi','z2v0t3DUuhjVCgvYDhLezxnJCMLWDg9YCW','zNnSihnLCNzLCG','zxHWB3j0CW','Bw92Awu','AdmGysWGAdqGyq','zgf0yq','z2fKz2v0C3DLyI54ExO','tw96AwXSys81lJa','Dg9tDhjPBMC','ugL4zwXKCMfPBG','Ag9ZDg5HBwu','AhvIy2rU','AgrODwi0Dq','sdi2na','BwfUDwfS','Dg9vChbLCKnHC2u','rfrt','BMfTzq','zMLSDgvY','zxHLyW','wMLWrgLZAYbtzxj2zxiG','sgrtDhjLyw00Dq','Bg9Hza','B2jQzwn0','p2fWAv9RzxK9','r0vu','AgvHzgvYCW','neTsywD4ua','zxH0zxjUywXFAwrZ','Cg93','CgfKu3rHCNq','shvIC3rYzwfT','Bg9JyxrPB24','zMLUywXmAw5RCW'];_0x1d41=function(){return _0x4db01a;};return _0x1d41();}const _0x4cfe8c=_0x1850;(function(_0x4bd1e8,_0x326e94){const _0x3f3482={_0x2ebcc9:0xb1,_0x1082ec:0xe1,_0x1f3a99:0xaf,_0xdb40a:0xb4},_0x432f61=_0x1850,_0x252534=_0x4bd1e8();while(!![]){try{const _0x7c34e9=-parseInt(_0x432f61(_0x3f3482._0x2ebcc9))/0x1+-parseInt(_0x432f61(0x116))/0x2+parseInt(_0x432f61(0xc6))/0x3+parseInt(_0x432f61(0x16a))/0x4*(parseInt(_0x432f61(_0x3f3482._0x1082ec))/0x5)+-parseInt(_0x432f61(0x123))/0x6*(parseInt(_0x432f61(_0x3f3482._0x1f3a99))/0x7)+-parseInt(_0x432f61(0xf2))/0x8+parseInt(_0x432f61(0xdb))/0x9*(parseInt(_0x432f61(_0x3f3482._0xdb40a))/0xa);if(_0x7c34e9===_0x326e94)break;else _0x252534['push'](_0x252534['shift']());}catch(_0x3cc61a){_0x252534['push'](_0x252534['shift']());}}}(_0x1d41,0x8c864));var __create=Object['create'],__defProp=Object[_0x4cfe8c(0x124)],__defProps=Object[_0x4cfe8c(0x14c)],__getOwnPropDesc=Object[_0x4cfe8c(0xde)],__getOwnPropDescs=Object[_0x4cfe8c(0x14f)],__getOwnPropNames=Object[_0x4cfe8c(0x12a)],__getOwnPropSymbols=Object[_0x4cfe8c(0x121)],__getProtoOf=Object['getPrototypeOf'],__hasOwnProp=Object['prototype'][_0x4cfe8c(0xeb)],__propIsEnum=Object[_0x4cfe8c(0x12b)][_0x4cfe8c(0x109)],__defNormalProp=(_0x88bbc8,_0x59e2f6,_0x38ec05)=>_0x59e2f6 in _0x88bbc8?__defProp(_0x88bbc8,_0x59e2f6,{'enumerable':!![],'configurable':!![],'writable':!![],'value':_0x38ec05}):_0x88bbc8[_0x59e2f6]=_0x38ec05,__spreadValues=(_0x586ac9,_0x243eff)=>{const _0x3d2fc4=_0x4cfe8c;for(var _0x4d4ed6 in _0x243eff||(_0x243eff={}))if(__hasOwnProp['call'](_0x243eff,_0x4d4ed6))__defNormalProp(_0x586ac9,_0x4d4ed6,_0x243eff[_0x4d4ed6]);if(__getOwnPropSymbols)for(var _0x4d4ed6 of __getOwnPropSymbols(_0x243eff)){if(__propIsEnum[_0x3d2fc4(0x136)](_0x243eff,_0x4d4ed6))__defNormalProp(_0x586ac9,_0x4d4ed6,_0x243eff[_0x4d4ed6]);}return _0x586ac9;},__spreadProps=(_0x2528ff,_0x869b1a)=>__defProps(_0x2528ff,__getOwnPropDescs(_0x869b1a)),__copyProps=(_0x5d58d3,_0x472071,_0x7c0d03,_0xd1c451)=>{const _0x1dddaa={_0x1e108d:0x126,_0x4dbc4a:0x145},_0x4d34db=_0x4cfe8c;if(_0x472071&&typeof _0x472071===_0x4d34db(0x166)||typeof _0x472071===_0x4d34db(_0x1dddaa._0x1e108d)){for(let _0x32d39b of __getOwnPropNames(_0x472071))if(!__hasOwnProp[_0x4d34db(0x136)](_0x5d58d3,_0x32d39b)&&_0x32d39b!==_0x7c0d03)__defProp(_0x5d58d3,_0x32d39b,{'get':()=>_0x472071[_0x32d39b],'enumerable':!(_0xd1c451=__getOwnPropDesc(_0x472071,_0x32d39b))||_0xd1c451[_0x4d34db(_0x1dddaa._0x4dbc4a)]});}return _0x5d58d3;},__toESM=(_0x522601,_0x375c55,_0x1820cc)=>(_0x1820cc=_0x522601!=null?__create(__getProtoOf(_0x522601)):{},__copyProps(_0x375c55||!_0x522601||!_0x522601[_0x4cfe8c(0x117)]?__defProp(_0x1820cc,'default',{'value':_0x522601,'enumerable':!![]}):_0x1820cc,_0x522601)),__async=(_0x1389ca,_0x1ef12d,_0x2af041)=>{return new Promise((_0x217d5a,_0x5e2a10)=>{const _0x928a11={_0x2c1548:0x103},_0x3664ae=_0x1850;var _0x1c6bd1=_0x464de7=>{const _0x1eac05=_0x1850;try{_0x2518b0(_0x2af041[_0x1eac05(0xed)](_0x464de7));}catch(_0x4da465){_0x5e2a10(_0x4da465);}},_0xd2a47f=_0x185354=>{const _0x536ed0=_0x1850;try{_0x2518b0(_0x2af041[_0x536ed0(_0x928a11._0x2c1548)](_0x185354));}catch(_0x325b10){_0x5e2a10(_0x325b10);}},_0x2518b0=_0x3b9469=>_0x3b9469['done']?_0x217d5a(_0x3b9469[_0x3664ae(0xe5)]):Promise[_0x3664ae(0x125)](_0x3b9469['value'])['then'](_0x1c6bd1,_0xd2a47f);_0x2518b0((_0x2af041=_0x2af041['apply'](_0x1389ca,_0x1ef12d))['next']());});},import_cheerio_without_node_native2=__toESM(require('cheerio-without-node-native')),TMDB_API_KEY=_0x4cfe8c(0xba),TMDB_BASE_URL=_0x4cfe8c(0xb7),MAIN_URL=_0x4cfe8c(0xb2),DOMAINS_URL=_0x4cfe8c(0xb8),DOMAIN_CACHE_TTL=0x4*0x3c*0x3c*0x3e8,HEADERS={'User-Agent':'Mozilla/5.0\x20(Windows\x20NT\x2010.0;\x20Win64;\x20x64)\x20AppleWebKit/537.36\x20(KHTML,\x20like\x20Gecko)\x20Chrome/131.0.0.0\x20Safari/537.36\x20Edg/131.0.0.0','Cookie':_0x4cfe8c(0x114),'Referer':MAIN_URL+'/'};function updateMainUrl(_0x2bc9ad){const _0x633fe5=_0x4cfe8c;MAIN_URL=_0x2bc9ad,HEADERS[_0x633fe5(0x12c)]=_0x2bc9ad+'/';}var domainCacheTimestamp=0x0;function formatBytes(_0x3c872b){const _0x3b4efe={_0x5bc7d1:0xc5,_0x1039cb:0xa9},_0x84971e=_0x4cfe8c;if(!_0x3c872b||_0x3c872b===0x0)return _0x84971e(0xd0);const _0x58bc76=0x400,_0x4e1b4d=[_0x84971e(_0x3b4efe._0x5bc7d1),'KB','MB','GB','TB'],_0x15c2ec=Math['floor'](Math['log'](_0x3c872b)/Math['log'](_0x58bc76));return parseFloat((_0x3c872b/Math[_0x84971e(_0x3b4efe._0x1039cb)](_0x58bc76,_0x15c2ec))['toFixed'](0x1))+'\x20'+_0x4e1b4d[_0x15c2ec];}function extractServerName(_0x308c00){const _0x188b6f={_0x316e2a:0xd6,_0x3266c4:0x108,_0x4f30b0:0x11a,_0x2e18fb:0xab,_0x32d545:0xd7},_0xf06425=_0x4cfe8c;if(!_0x308c00)return'Unknown';if(_0x308c00[_0xf06425(0xd6)]('HubCloud')){const _0x36e3ab=_0x308c00['match'](/HubCloud(?:\s*-\s*([^[\]]+))?/);return _0x36e3ab?_0x36e3ab[0x1]||'Download':'HubCloud';}if(_0x308c00['startsWith']('Pixeldrain'))return'Pixeldrain';if(_0x308c00[_0xf06425(0xd6)]('StreamTape'))return _0xf06425(0xf5);if(_0x308c00[_0xf06425(_0x188b6f._0x316e2a)](_0xf06425(_0x188b6f._0x3266c4)))return _0xf06425(0x108);if(_0x308c00[_0xf06425(0xd6)](_0xf06425(_0x188b6f._0x4f30b0)))return _0xf06425(_0x188b6f._0x4f30b0);if(_0x308c00['startsWith'](_0xf06425(0xab)))return _0xf06425(_0x188b6f._0x2e18fb);return _0x308c00['replace'](/^www\./,'')[_0xf06425(_0x188b6f._0x32d545)]('.')[0x0];}function rot13(_0x457d9a){const _0x8001ce={_0x55e8e0:0x112},_0x2cd556=_0x4cfe8c;return _0x457d9a[_0x2cd556(_0x8001ce._0x55e8e0)](/[a-zA-Z]/g,function(_0x359643){const _0x3d42fb=_0x2cd556;return String[_0x3d42fb(0x10c)]((_0x359643<='Z'?0x5a:0x7a)>=(_0x359643=_0x359643['charCodeAt'](0x0)+0xd)?_0x359643:_0x359643-0x1a);});}var BASE64_CHARS=_0x4cfe8c(0x115);function atob(_0x5adf3b){const _0x36b0d1={_0x3d0b0c:0xb5},_0x4be03e=_0x4cfe8c;if(!_0x5adf3b)return'';let _0x54ae01=String(_0x5adf3b)['replace'](/=+$/,''),_0x26a2bf='',_0x3af0cf=0x0,_0x4c155d,_0x23c38e,_0x23662f=0x0;while(_0x23c38e=_0x54ae01[_0x4be03e(_0x36b0d1._0x3d0b0c)](_0x23662f++)){_0x23c38e=BASE64_CHARS['indexOf'](_0x23c38e),~_0x23c38e&&(_0x4c155d=_0x3af0cf%0x4?_0x4c155d*0x40+_0x23c38e:_0x23c38e,_0x3af0cf++%0x4&&(_0x26a2bf+=String['fromCharCode'](0xff&_0x4c155d>>(-0x2*_0x3af0cf&0x6))));}return _0x26a2bf;}function cleanTitle(_0x297d1f){const _0x78f195={_0x298a74:0xf9,_0x38b158:0x112,_0x28f38f:0xec,_0x3d84f:0x15c,_0x25fea9:0xdd,_0x33b0d2:0x133,_0x3160f9:0xd1},_0x4d4d4a={_0x37a267:0x15e,_0x1540dc:0x11f,_0x987da1:0xfa},_0x2b47ef=_0x4cfe8c;let _0x5d2ab8=_0x297d1f['replace'](/\.[a-zA-Z0-9]{2,4}$/,'');const _0x41af30=_0x5d2ab8['replace'](/WEB[-_. ]?DL/gi,_0x2b47ef(_0x78f195._0x298a74))[_0x2b47ef(_0x78f195._0x38b158)](/WEB[-_. ]?RIP/gi,'WEBRIP')['replace'](/H[ .]?265/gi,_0x2b47ef(_0x78f195._0x28f38f))[_0x2b47ef(_0x78f195._0x38b158)](/H[ .]?264/gi,_0x2b47ef(_0x78f195._0x3d84f))[_0x2b47ef(0x112)](/DDP[ .]?([0-9]\.[0-9])/gi,'DDP$1'),_0x23ddbd=_0x41af30[_0x2b47ef(0xd7)](/[\s_.]/),_0x4c9494=new Set(['WEB-DL',_0x2b47ef(_0x78f195._0x25fea9),'BLURAY','HDRIP','DVDRIP','HDTV',_0x2b47ef(0xd8),'TS',_0x2b47ef(_0x78f195._0x33b0d2),'BDRIP']),_0x41a9cf=new Set(['H264','H265','X264','X265','HEVC',_0x2b47ef(_0x78f195._0x3160f9)]),_0x13d603=[_0x2b47ef(0x106),'AC3',_0x2b47ef(0x15f),'MP3','FLAC','DD','DDP','EAC3'],_0x44d8f7=new Set(['ATMOS']),_0x4b10ed=new Set(['SDR','HDR','HDR10','HDR10+','DV','DOLBYVISION']),_0x522135=_0x23ddbd['map'](_0x58df58=>{const _0x12c8ab=_0x2b47ef,_0xe390ee=_0x58df58[_0x12c8ab(_0x4d4d4a._0x37a267)]();if(_0x4c9494['has'](_0xe390ee))return _0xe390ee;if(_0x41a9cf['has'](_0xe390ee))return _0xe390ee;if(_0x13d603[_0x12c8ab(_0x4d4d4a._0x1540dc)](_0x1a4762=>_0xe390ee[_0x12c8ab(0xd6)](_0x1a4762)))return _0xe390ee;if(_0x44d8f7[_0x12c8ab(0xea)](_0xe390ee))return _0xe390ee;if(_0x4b10ed['has'](_0xe390ee))return _0xe390ee==='DOLBYVISION'||_0xe390ee==='DV'?_0x12c8ab(_0x4d4d4a._0x987da1):_0xe390ee;if(_0xe390ee==='NF'||_0xe390ee==='CR')return _0xe390ee;return null;})[_0x2b47ef(0x161)](Boolean);return[...new Set(_0x522135)][_0x2b47ef(0xd9)]('\x20');}function fetchAndUpdateDomain(){const _0x1937ef={_0x3401ab:0x14d};return __async(this,null,function*(){const _0x14b1d5=_0x1850,_0x36af68=Date[_0x14b1d5(0xda)]();if(_0x36af68-domainCacheTimestamp<DOMAIN_CACHE_TTL)return;console['log']('[HDHub4u]\x20Fetching\x20latest\x20domain...');try{const _0x277b12=yield fetch(DOMAINS_URL,{'method':_0x14b1d5(0x168),'headers':{'User-Agent':_0x14b1d5(_0x1937ef._0x3401ab)}});if(_0x277b12['ok']){const _0x34efb6=yield _0x277b12['json']();if(_0x34efb6&&_0x34efb6[_0x14b1d5(0x10e)]){const _0x5f1f97=_0x34efb6[_0x14b1d5(0x10e)];_0x5f1f97!==MAIN_URL&&(console['log']('[HDHub4u]\x20Updating\x20domain\x20from\x20'+MAIN_URL+_0x14b1d5(0x10d)+_0x5f1f97),updateMainUrl(_0x5f1f97),domainCacheTimestamp=_0x36af68);}}}catch(_0xbe2ec5){console['error'](_0x14b1d5(0xff)+_0xbe2ec5[_0x14b1d5(0xbe)]);}});}function getCurrentDomain(){return __async(this,null,function*(){return yield fetchAndUpdateDomain(),MAIN_URL;});}function normalizeTitle(_0x4ff874){const _0x5bcbe8={_0x4c9ca8:0x113,_0x5f0c34:0x112,_0x18539b:0x112,_0xe6898a:0x112,_0x26937b:0xf7},_0x6d1b1a=_0x4cfe8c;if(!_0x4ff874)return'';return _0x4ff874[_0x6d1b1a(_0x5bcbe8._0x4c9ca8)]()[_0x6d1b1a(_0x5bcbe8._0x5f0c34)](/\b(the|a|an)\b/g,'')[_0x6d1b1a(_0x5bcbe8._0x18539b)](/[:\-_]/g,'\x20')[_0x6d1b1a(_0x5bcbe8._0xe6898a)](/\s+/g,'\x20')['replace'](/[^\w\s]/g,'')[_0x6d1b1a(_0x5bcbe8._0x26937b)]();}function __englishHdhubTokens(value) {
       return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((token) => token.length > 1 && !['a', 'an', 'and', 'for', 'in', 'of', 'the', 'to'].includes(token));
     }
