@@ -39,6 +39,63 @@ function safe(promiseFn) {
 function oneLine(text) {
   return String(text).replace(/\s+/g, " ").trim();
 }
+var AIOSTREAMS_BASE_URL = "https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search";
+var AIOSTREAMS_UUID = "4b990cd7-9058-41f6-a099-224272656e63";
+var AIOSTREAMS_PASSWORD = "Jason001$";
+var TMDB_API_KEY = "af3fa2d2239e9d0e6c04a1076d3df76f";
+var TMDB_BASE_URL = "https://api.themoviedb.org/3";
+var BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function stringToBase64(str) {
+  var bytes = [];
+  for (var i = 0; i < str.length; i += 1) bytes.push(str.charCodeAt(i) & 255);
+  var out = "";
+  for (var j = 0; j < bytes.length; j += 3) {
+    var b0 = bytes[j];
+    var b1 = j + 1 < bytes.length ? bytes[j + 1] : void 0;
+    var b2 = j + 2 < bytes.length ? bytes[j + 2] : void 0;
+    out += BASE64_CHARS[b0 >> 2];
+    out += BASE64_CHARS[(b0 & 3) << 4 | (b1 === void 0 ? 0 : b1 >> 4)];
+    out += b1 === void 0 ? "=" : BASE64_CHARS[(b1 & 15) << 2 | (b2 === void 0 ? 0 : b2 >> 6)];
+    out += b2 === void 0 ? "=" : BASE64_CHARS[b2 & 63];
+  }
+  return out;
+}
+function realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum) {
+  var tmdbType = mediaType === "tv" ? "tv" : "movie";
+  var tmdbUrl = TMDB_BASE_URL + "/" + tmdbType + "/" + tmdbId + "/external_ids?api_key=" + TMDB_API_KEY;
+  return fetch(tmdbUrl).then(function(res) {
+    return res.text().then(function(text) {
+      var data = null;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+      }
+      if (!res.ok || !data || !data.imdb_id) {
+        return "TMDB lookup for " + tmdbType + "/" + tmdbId + " -> HTTP " + res.status + ', no imdb_id, body starts "' + text.slice(0, 80) + '"';
+      }
+      var imdbId = data.imdb_id;
+      var searchType = mediaType === "tv" ? "series" : "movie";
+      var id = searchType === "series" ? imdbId + ":" + (seasonNum || 1) + ":" + (episodeNum || 1) : imdbId;
+      var searchUrl = AIOSTREAMS_BASE_URL + "?type=" + searchType + "&id=" + encodeURIComponent(id);
+      var authHeader = "Basic " + stringToBase64(AIOSTREAMS_UUID + ":" + AIOSTREAMS_PASSWORD);
+      return fetch(searchUrl, { headers: { Authorization: authHeader, Accept: "application/json" } }).then(function(aioRes) {
+        return aioRes.text().then(function(aioText) {
+          var aioData = null;
+          try {
+            aioData = JSON.parse(aioText);
+          } catch (e) {
+          }
+          var resultCount = aioData && aioData.success && aioData.data && Array.isArray(aioData.data.results) ? aioData.data.results.length : "n/a";
+          return "imdb_id=" + imdbId + ", AIOStreams HTTP " + aioRes.status + ", success=" + (aioData && aioData.success) + ", resultCount=" + resultCount + ', body starts "' + aioText.slice(0, 120) + '"';
+        });
+      }).catch(function(error) {
+        return "imdb_id=" + imdbId + ", AIOStreams FETCH ERROR: " + (error && error.message);
+      });
+    });
+  }).catch(function(error) {
+    return "TMDB FETCH ERROR: " + (error && error.message);
+  });
+}
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   var checks = [
     { name: "runtime", fn: function() {
@@ -66,6 +123,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     } },
     { name: "args", fn: function() {
       return Promise.resolve("tmdbId=" + tmdbId + " mediaType=" + mediaType + " season=" + seasonNum + " episode=" + episodeNum);
+    } },
+    { name: "real aiostreams flow", fn: function() {
+      return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum);
     } }
   ];
   return Promise.all(
