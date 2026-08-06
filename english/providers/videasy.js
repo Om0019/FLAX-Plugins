@@ -88,7 +88,13 @@ const _0xa7424a=_0x4a66;(function(_0x589b66,_0x59d20c){const _0x4878ef={_0x38b69
   // playability probe here.
   var __streamProbeRangeBytes = 2048;
   var __streamProbeTimeoutMs = 5000;
-  var __streamProbeConcurrency = 4;
+  // Was 4. Nuvio itself runs up to 3 providers concurrently, and several of
+  // this repo's own providers fan out 10-50+ of their own requests while
+  // scraping a single title -- on a real device that adds up to enough
+  // simultaneous open connections to be a plausible crash trigger. Lower
+  // per-provider probe concurrency trades a little probing speed for a
+  // meaningfully smaller connection/memory footprint at any given moment.
+  var __streamProbeConcurrency = 2;
   var __hasTimers = typeof setTimeout === "function";
 
   function __fetchWithTimeout(url, options, timeoutMs) {

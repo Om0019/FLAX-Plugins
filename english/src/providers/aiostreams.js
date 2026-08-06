@@ -126,7 +126,13 @@ function fetchJsonWithTimeout(url, options, timeoutMs) {
 
 const STREAM_PROBE_RANGE_BYTES = 2048;
 const STREAM_PROBE_TIMEOUT_MS = 5000;
-const STREAM_PROBE_CONCURRENCY = 4;
+// Was 4. Nuvio itself runs up to 3 providers concurrently, and several of
+// this repo's own providers fan out 10-50+ of their own requests while
+// scraping a single title -- on a real device that adds up to enough
+// simultaneous open connections to be a plausible crash trigger. Lower
+// per-provider probe concurrency trades a little probing speed for a
+// meaningfully smaller connection/memory footprint at any given moment.
+const STREAM_PROBE_CONCURRENCY = 2;
 
 function isHtmlProbeResponse(res, text) {
   const contentType = ((res.headers && res.headers.get && res.headers.get('content-type')) || '').toLowerCase();
