@@ -1992,13 +1992,26 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
           return [];
         }
 
-        const setCookies = csrfRes.headers.getSetCookie();
-        let xsrfCookieVal = '';
-        let sessionCookieVal = '';
-        for (const cookie of setCookies) {
-          if (cookie.startsWith('XSRF-TOKEN=')) xsrfCookieVal = cookie.split(';')[0].substring('XSRF-TOKEN='.length);
-          else if (cookie.startsWith('sololatinonet-session=')) sessionCookieVal = cookie.split(';')[0].substring('sololatinonet-session='.length);
+        // Headers.getSetCookie() is a recent Fetch spec addition (Node 18.14+,
+        // browsers ~2023) that on-device diagnostics showed silently breaking
+        // this entire request: it isn't implemented by Nuvio's fetch/Headers,
+        // so calling it threw, which was swallowed by scrape()'s own catch --
+        // the match/search phase logged fine, then everything downstream of
+        // this point just vanished into an empty result with no visible
+        // error. Cookie names are pulled out with a regex from whatever the
+        // polyfill's `get('set-cookie')` returns instead, since that method
+        // is old enough to exist everywhere; the regex-per-name approach
+        // sidesteps having to know whether multiple Set-Cookie headers get
+        // joined into one string or returned as just the first one.
+        const rawSetCookie = typeof csrfRes.headers.getSetCookie === 'function'
+          ? csrfRes.headers.getSetCookie().join(', ')
+          : (csrfRes.headers.get('set-cookie') || '');
+        function extractCookieValue(headerValue, cookieName) {
+          const match = String(headerValue || '').match(new RegExp(`(?:^|[,;]\\s*)${cookieName}=([^;,]*)`));
+          return match ? match[1] : '';
         }
+        const xsrfCookieVal = extractCookieValue(rawSetCookie, 'XSRF-TOKEN');
+        const sessionCookieVal = extractCookieValue(rawSetCookie, 'sololatinonet-session');
 
         if (!xsrfCookieVal) {
           console.warn('SoloLatino: sanctum response did not return XSRF-TOKEN cookie.');
