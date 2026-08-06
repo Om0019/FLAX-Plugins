@@ -1190,25 +1190,29 @@ function extractStreamResolution(quality, title, name) {
   if (!match) return null;
   return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
 }
+const MEDIAFLOW_PROXY_BASE_URL = "https://proxy.fl4x.com";
+const MEDIAFLOW_PROXY_API_PASSWORD = "1357";
+const HLS_URL_PATTERN = /\.m3u8(?:$|[?#])/i;
+function toMediaflowProxyUrl(targetUrl, headers) {
+  const endpoint = HLS_URL_PATTERN.test(String(targetUrl || "")) ? "proxy/hls/manifest.m3u8" : "proxy/stream";
+  const params = new URLSearchParams();
+  params.set("d", targetUrl);
+  if (headers && headers["User-Agent"]) params.set("h_user-agent", headers["User-Agent"]);
+  if (headers && headers.Referer) params.set("h_referer", headers.Referer);
+  params.set("api_password", MEDIAFLOW_PROXY_API_PASSWORD);
+  return `${MEDIAFLOW_PROXY_BASE_URL}/${endpoint}?${params.toString()}`;
+}
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
   const nuvioStream = {
     name: internalStream.name,
     title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
-    url: internalStream.url,
+    url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
     quality: "Unknown",
     size: "Unknown",
-    headers: internalStream.headers,
     provider: "novelas360"
   };
-  if (internalStream.headers) {
-    nuvioStream.behaviorHints = {
-      proxyHeaders: {
-        request: internalStream.headers
-      }
-    };
-  }
   return nuvioStream;
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
