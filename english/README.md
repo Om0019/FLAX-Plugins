@@ -77,10 +77,27 @@ Because the sandbox has no timers (above), a probed candidate that never
 settles — a blackholed CDN, a host that accepts the connection and never
 answers — used to leave the whole provider's `getStreams()` waiting forever,
 since the original concurrency helper only resolved once every candidate had
-settled. That surfaced as the whole English list spinning indefinitely with
-nothing shown. Every provider's probing helper now resolves as soon as it
-has already found enough playable streams to fill its 2-per-provider cap,
+settled. Every provider's probing helper now resolves as soon as it has
+already found enough playable streams to fill its 2-per-provider cap,
 instead of waiting on stragglers that may never finish.
+
+That mitigation didn't cover the actual cause of English titles spinning
+forever, though: the probe requests a small `Range` slice of each candidate
+(`Range: bytes=0-2047`) so it only has to read a couple of kilobytes to
+decide whether a link is alive, but some CDNs (`video-downloads
+.googleusercontent.com`, hit via UHDMovies) ignore that header entirely and
+respond `200` with the *entire* file instead of `206` with just the
+requested slice. The probe used to call `res.text()` unconditionally, so a
+"quick playability check" against one of those links meant buffering an
+entire multi-hundred-MB/GB movie file into a JS string before it could
+return `true` or `false` — which is what was actually hanging the whole
+provider (confirmed by instrumenting every `fetch` call under
+`tools/run-in-sandbox.js`: every request completed, including the probes,
+but the process never made progress afterward). The probe now only reads a
+response body when it's actually bounded — a real `206` (the `Range` was
+honoured) or a `Content-Length` small enough to be a manifest or error page
+rather than a video file — and otherwise trusts the status code alone
+without downloading anything.
 
 ## Disabled providers
 
