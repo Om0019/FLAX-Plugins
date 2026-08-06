@@ -2,25 +2,9 @@
 // sandbox targets -- do not hand-edit. Regenerate with:
 //   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/cinehdplus.js > latino/providers/cinehdplus.js
 // Edit src/providers/cinehdplus.js instead, then rebuild.
-var __defProp = Object.defineProperty;
-var __defProps = Object.defineProperties;
-var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __propIsEnum = Object.prototype.propertyIsEnumerable;
-var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __spreadValues = (a, b) => {
-  for (var prop in b || (b = {}))
-    if (__hasOwnProp.call(b, prop))
-      __defNormalProp(a, prop, b[prop]);
-  if (__getOwnPropSymbols)
-    for (var prop of __getOwnPropSymbols(b)) {
-      if (__propIsEnum.call(b, prop))
-        __defNormalProp(a, prop, b[prop]);
-    }
-  return a;
-};
-var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 var __objRest = (source, exclude) => {
   var target = {};
   for (var prop in source)
@@ -35,26 +19,39 @@ var __objRest = (source, exclude) => {
 };
 const DEFAULT_TIMEOUT_MS = 3e3;
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const externalSignal = options.signal;
-    const abortFromExternalSignal = () => controller.abort();
+  const externalSignal = options.signal;
+  const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
+  let timeoutId;
+  let onExternalAbort;
+  const deadline = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
+    }, timeoutMs);
     if (externalSignal) {
-      if (externalSignal.aborted) controller.abort();
-      else externalSignal.addEventListener("abort", abortFromExternalSignal, { once: true });
+      if (externalSignal.aborted) {
+        reject(new Error(`Fetch aborted: ${url}`));
+      } else {
+        onExternalAbort = () => reject(new Error(`Fetch aborted: ${url}`));
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
     }
-    const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
-    fetch(url, __spreadProps(__spreadValues({}, fetchOptions), { signal: controller.signal })).then((res) => {
-      clearTimeout(timeoutId);
-      if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternalSignal);
-      resolve(res);
-    }).catch((error) => {
-      clearTimeout(timeoutId);
-      if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternalSignal);
-      reject(error);
-    });
   });
+  function cleanup() {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+  }
+  return Promise.race([fetch(url, fetchOptions), deadline]).then(
+    (res) => {
+      cleanup();
+      return res;
+    },
+    (error) => {
+      cleanup();
+      throw error;
+    }
+  );
 }
 function probe(signal) {
   const targetUrl = "https://cinehdplus.org/";

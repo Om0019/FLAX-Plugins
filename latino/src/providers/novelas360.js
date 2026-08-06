@@ -159,45 +159,62 @@ function normalizeUrl(value, baseUrl) {
   }
 }
 
-/** Promise-chain equivalent of the original addon's fetchWithDeadline. */
+/**
+ * Promise-chain equivalent of the original addon's fetchWithDeadline.
+ *
+ * The deadline and any caller-supplied abort signal are raced against the
+ * request, NOT wired into fetch via `signal`. Nuvio runs on React Native,
+ * whose fetch does not honour an AbortSignal the way Node's does -- passing
+ * `signal` makes the request fail outright, and since getStreams swallows
+ * errors into an empty array, every AbortController-based provider silently
+ * returned zero streams on-device while working fine under Node. (Exactly
+ * the providers that avoid AbortController are the ones that were observed
+ * working in the app.) Racing can't cancel the underlying request, so a
+ * timed-out or abandoned fetch runs to completion in the background; that's
+ * an acceptable trade for a request that actually completes, and callers
+ * already treat these rejections as "move on to the next candidate".
+ */
 function fetchWithDeadline(url, options, timeoutMs, consume) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
+  const externalSignal = options.signal;
+  const { signal, ...fetchOptions } = options;
+
+  let timeoutId;
+  let onExternalAbort;
+
+  const deadline = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
 
-    const externalSignal = options.signal;
-    const abortFromExternalSignal = () => controller.abort();
     if (externalSignal) {
-      if (externalSignal.aborted) controller.abort();
-      else externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true });
+      if (externalSignal.aborted) {
+        reject(new Error(`Fetch aborted: ${url}`));
+      } else {
+        onExternalAbort = () => reject(new Error(`Fetch aborted: ${url}`));
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
     }
-
-    const { signal, ...fetchOptions } = options;
-
-    function cleanup() {
-      clearTimeout(timeoutId);
-      if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternalSignal);
-    }
-
-    fetch(url, { ...fetchOptions, signal: controller.signal })
-      .then((res) => Promise.resolve(consume(res)))
-      .then((result) => {
-        cleanup();
-        resolve(result);
-      })
-      .catch((error) => {
-        cleanup();
-        if (error && error.name === 'AbortError') {
-          reject(new Error(timedOut ? `Fetch timeout after ${timeoutMs}ms: ${url}` : `Fetch aborted: ${url}`));
-        } else {
-          reject(error);
-        }
-      });
   });
+
+  function cleanup() {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
+
+  return Promise.race([request, deadline]).then(
+    (result) => {
+      cleanup();
+      return result;
+    },
+    (error) => {
+      cleanup();
+      throw error;
+    }
+  );
 }
 
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {

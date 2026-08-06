@@ -59,6 +59,41 @@ function oneLine(text) {
   return String(text).replace(/\s+/g, ' ').trim();
 }
 
+// The two checks that isolate the actual bug: same URL, same everything,
+// the only difference being whether an AbortSignal is handed to fetch.
+// Every provider observed working in the app avoids `signal`; every one
+// observed returning nothing used it.
+var SIGNAL_PROBE_URL = 'https://api.themoviedb.org/3/movie/603/external_ids?api_key=af3fa2d2239e9d0e6c04a1076d3df76f';
+
+function checkFetchWithSignal() {
+  if (typeof AbortController === 'undefined') return Promise.resolve('no AbortController');
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () { controller.abort(); }, 20000);
+  return fetch(SIGNAL_PROBE_URL, { signal: controller.signal })
+    .then(function (res) {
+      return res.text().then(function (text) {
+        clearTimeout(timeoutId);
+        return 'OK, HTTP ' + res.status + ', ' + text.length + ' bytes';
+      });
+    })
+    .catch(function (error) {
+      clearTimeout(timeoutId);
+      return 'FAILED: name=' + (error && error.name) + ' message=' + (error && error.message);
+    });
+}
+
+function checkFetchWithoutSignal() {
+  return fetch(SIGNAL_PROBE_URL)
+    .then(function (res) {
+      return res.text().then(function (text) {
+        return 'OK, HTTP ' + res.status + ', ' + text.length + ' bytes';
+      });
+    })
+    .catch(function (error) {
+      return 'FAILED: name=' + (error && error.name) + ' message=' + (error && error.message);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Real, authenticated AIOStreams flow -- the actual aiostreams.js swallows
 // every error and just returns [], so this re-runs the same two requests
@@ -141,7 +176,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     { name: 'aiostreams', fn: function () { return checkUrl('aiostreams', 'https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search?type=movie&id=tt0133093'); } },
     { name: 'sololatino', fn: function () { return checkUrl('sololatino', 'https://sololatino.net/'); } },
     { name: 'args', fn: function () { return Promise.resolve('tmdbId=' + tmdbId + ' mediaType=' + mediaType + ' season=' + seasonNum + ' episode=' + episodeNum); } },
-    { name: 'real aiostreams flow', fn: function () { return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum); } }
+    { name: 'real aiostreams flow', fn: function () { return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum); } },
+    { name: 'fetch WITH signal', fn: checkFetchWithSignal },
+    { name: 'fetch WITHOUT signal', fn: checkFetchWithoutSignal }
   ];
 
   return Promise.all(
