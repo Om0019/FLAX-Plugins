@@ -26,14 +26,19 @@
  * multi-server pages, JS redirects and iframe chasing — is ported faithfully.
  */
 
-// Nuvio's sandbox is documented to provide `cheerio-without-node-native` as an
-// available tool (alongside `fetch`); this falls back to `require('cheerio')`
-// so the file can also be run/tested under plain Node.
+// Nuvio's sandbox provides `cheerio-without-node-native` (alongside `fetch`),
+// not plain `cheerio` -- requiring the wrong name here silently left cheerio
+// undefined and broke every scrape. Falls back to `cheerio` so the file can
+// also be run/tested under plain Node.
 let cheerio;
 try {
-  cheerio = require('cheerio');
+  cheerio = require('cheerio-without-node-native');
 } catch {
-  cheerio = typeof global !== 'undefined' ? global.cheerio : undefined;
+  try {
+    cheerio = require('cheerio');
+  } catch {
+    cheerio = typeof global !== 'undefined' ? global.cheerio : undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
