@@ -1773,7 +1773,7 @@ function toNuvioStream(internalStream) {
   return nuvioStream;
 }
 function diagStream(text) {
-  const summary = String(text).replace(/\s+/g, " ").trim().slice(0, 200);
+  const summary = String(text).replace(/\s+/g, " ").trim().slice(0, 320);
   return {
     name: `\u26A0\uFE0F ${summary}`,
     title: "SoloLatino diag",
@@ -1783,13 +1783,19 @@ function diagStream(text) {
     provider: "sololatino"
   };
 }
+function rawSearchProbe(query) {
+  const searchUrl = `https://sololatino.net/buscar?q=${encodeURIComponent(query)}`;
+  return fetchTextWithTimeout(searchUrl, { headers: browserHeaders("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") }, SEARCH_TIMEOUT_MS).then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, " ")}"`).catch((error) => `rawProbe: FETCH ERROR ${error && error.message}`);
+}
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
   const trail = [];
+  let lastTitle = null;
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : "tmdb: no details/title");
     trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
     if (!details || !details.title) return [];
+    lastTitle = details.title;
     return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) => {
       trail.push(`scrape: ${(results || []).length} raw result(s)`);
       return mapWithConcurrency(
@@ -1801,7 +1807,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return probed;
       });
     });
-  }).then((streams) => streams && streams.length > 0 ? streams : [diagStream(trail.join(" | "))]).catch((error) => {
+  }).then((streams) => {
+    if (streams && streams.length > 0) return streams;
+    if (!lastTitle) return [diagStream(trail.join(" | "))];
+    return rawSearchProbe(lastTitle).then((probeText) => {
+      trail.push(probeText);
+      return [diagStream(trail.join(" | "))];
+    });
+  }).catch((error) => {
     console.error("SoloLatino (Nuvio): getStreams failed:", error && error.message);
     trail.push(`THREW: ${error && error.message}`);
     return [diagStream(trail.join(" | "))];
