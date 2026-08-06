@@ -1686,7 +1686,7 @@ function toMediaflowProxyUrl(targetUrl, headers) {
 const STREAM_PROBE_RANGE_BYTES = 2048;
 const STREAM_PROBE_TIMEOUT_MS = 5e3;
 const STREAM_PROBE_CONCURRENCY = 4;
-const STREAM_HLS_PROBE_MAX_DEPTH = 2;
+const STREAM_HLS_PROBE_MAX_DEPTH = 1;
 function isHtmlProbeResponse(res, text) {
   const contentType = (res.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("text/html")) return true;
