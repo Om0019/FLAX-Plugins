@@ -1657,7 +1657,16 @@ function toMediaflowProxyUrl(targetUrl, headers) {
 const STREAM_PROBE_RANGE_BYTES = 2048;
 const STREAM_PROBE_TIMEOUT_MS = 5000;
 const STREAM_PROBE_CONCURRENCY = 4;
-const STREAM_HLS_PROBE_MAX_DEPTH = 2;
+// Depth 1, not 2: an on-device diag trace showed the manifest and its first
+// variant playlist (both text/m3u8) always fetch fine, but the actual binary
+// media segment this would recurse into consistently failed on-device
+// (status 0, no error, ~400ms) while fetching identically from a server
+// succeeded -- a JS fetch()-with-Range quirk on binary content, not a dead
+// stream. Real playback never goes through this fetch() anyway (Nuvio's
+// native player has its own HTTP stack), so verifying down through the
+// nested media playlist is enough evidence without probing the one binary
+// hop that produces false negatives here.
+const STREAM_HLS_PROBE_MAX_DEPTH = 1;
 
 function isHtmlProbeResponse(res, text) {
   const contentType = (res.headers.get('content-type') || '').toLowerCase();
