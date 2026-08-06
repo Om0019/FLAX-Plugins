@@ -2248,10 +2248,19 @@ function toNuvioStream(internalStream) {
 // apart from a bug from inside the app. Report a one-line trail of what
 // each stage actually did as a single non-playable stream instead, so it's
 // readable straight from Nuvio's own stream list.
+// Nuvio's test-result UI truncates a single long line, so the trail is
+// hard-wrapped onto its own lines every ~30 characters instead.
+function wrapDiagText(text, width) {
+  const clean = String(text).replace(/\s+/g, ' ').trim().slice(0, 600);
+  const lines = [];
+  for (let i = 0; i < clean.length; i += width) lines.push(clean.slice(i, i + width));
+  return lines.join('\n');
+}
+
 function diagStream(text) {
   return {
     name: '⚠️ SoloLatino diag',
-    title: String(text).replace(/\s+/g, ' ').slice(0, 300),
+    title: wrapDiagText(text, 30),
     url: 'https://example.com/diag-not-playable.mp4',
     quality: null,
     size: null,
