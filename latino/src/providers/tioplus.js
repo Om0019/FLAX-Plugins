@@ -2188,6 +2188,77 @@ function toMediaflowProxyUrl(targetUrl, headers) {
   return `${MEDIAFLOW_PROXY_BASE_URL}/${endpoint}?${params.toString()}`;
 }
 
+// ---------------------------------------------------------------------------
+// Playability probe, ported (simplified) from the upstream Latino Stremio
+// addon's src/scrapers/index.js isPlayableStream/probeHlsPlayback: rules out
+// dead streams (expired tokens, login walls, 403s, empty manifests) before
+// they're ever returned from getStreams(), instead of only being discovered
+// when a viewer presses play. Probes the exact URL Nuvio will fetch (i.e.
+// the MediaFlow-proxied one), with a bounded byte-range GET and, for an HLS
+// manifest, one hop into the first real variant/segment it names.
+// ---------------------------------------------------------------------------
+const STREAM_PROBE_RANGE_BYTES = 2048;
+const STREAM_PROBE_TIMEOUT_MS = 5000;
+const STREAM_PROBE_CONCURRENCY = 4;
+const STREAM_HLS_PROBE_MAX_DEPTH = 2;
+
+function isHtmlProbeResponse(res, text) {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('text/html')) return true;
+  return /^\s*<(!doctype|html)/i.test(text || '');
+}
+
+function hasPlaylistEntries(body) {
+  return body.includes('#EXT-X-STREAM-INF') || body.includes('#EXTINF');
+}
+
+function firstPlaylistEntryUrl(body, manifestUrl) {
+  const lines = String(body || '').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    try {
+      return new URL(trimmed, manifestUrl).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function probeHlsPlayback(body, manifestUrl, depth) {
+  const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
+  if (!resourceUrl) return Promise.resolve(false);
+  // Chased far enough to be confident this manifest actually names real
+  // media rather than proving every hop is itself another playlist.
+  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) return Promise.resolve(true);
+
+  return fetchTextWithTimeout(resourceUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
+    return true;
+  }).catch(() => false);
+}
+
+function probeStreamPlayable(streamUrl) {
+  return fetchTextWithTimeout(streamUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if ([401, 403, 404, 410, 451].includes(res.status)) return false;
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
+    return true;
+  }).catch(() => false);
+}
+
+function probeNuvioStream(nuvioStream) {
+  return probeStreamPlayable(nuvioStream.url).then((playable) => (playable ? nuvioStream : null));
+}
+
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
@@ -2222,7 +2293,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       if (!details || !details.title) return [];
 
       return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
-        (results || []).map((stream) => toNuvioStream(stream))
+        mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
       );
     })
     .catch((error) => {

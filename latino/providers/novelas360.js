@@ -1202,6 +1202,58 @@ function toMediaflowProxyUrl(targetUrl, headers) {
   params.set("api_password", MEDIAFLOW_PROXY_API_PASSWORD);
   return `${MEDIAFLOW_PROXY_BASE_URL}/${endpoint}?${params.toString()}`;
 }
+const STREAM_PROBE_RANGE_BYTES = 2048;
+const STREAM_PROBE_TIMEOUT_MS = 5e3;
+const STREAM_PROBE_CONCURRENCY = 4;
+const STREAM_HLS_PROBE_MAX_DEPTH = 2;
+function isHtmlProbeResponse(res, text) {
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html")) return true;
+  return /^\s*<(!doctype|html)/i.test(text || "");
+}
+function hasPlaylistEntries(body) {
+  return body.includes("#EXT-X-STREAM-INF") || body.includes("#EXTINF");
+}
+function firstPlaylistEntryUrl(body, manifestUrl) {
+  const lines = String(body || "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    try {
+      return new URL(trimmed, manifestUrl).toString();
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+function probeHlsPlayback(body, manifestUrl, depth) {
+  const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
+  if (!resourceUrl) return Promise.resolve(false);
+  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) return Promise.resolve(true);
+  return fetchTextWithTimeout(resourceUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
+    return true;
+  }).catch(() => false);
+}
+function probeStreamPlayable(streamUrl) {
+  return fetchTextWithTimeout(streamUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if ([401, 403, 404, 410, 451].includes(res.status)) return false;
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
+    return true;
+  }).catch(() => false);
+}
+function probeNuvioStream(nuvioStream) {
+  return probeStreamPlayable(nuvioStream.url).then((playable) => playable ? nuvioStream : null);
+}
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
@@ -1220,7 +1272,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     if (!details || !details.title) return [];
     return scrape(details.title, details.originalTitle, details.year, "series", seasonNum, episodeNum, { extraTitles }).then(
-      (results) => (results || []).map((stream) => toNuvioStream(stream))
+      (results) => mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
     );
   }).catch((error) => {
     console.error("Novelas360 (Nuvio): getStreams failed:", error && error.message);
