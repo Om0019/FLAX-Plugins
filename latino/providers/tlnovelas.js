@@ -1278,21 +1278,37 @@ function probeStreamPlayable(streamUrl) {
     return text.length > 0;
   }).catch(() => false);
 }
-function diagProbeStream(streamUrl) {
-  return fetchTextWithTimeout(streamUrl, {
+function diagProbeOneLevel(url) {
+  const startedAt = Date.now();
+  return fetchTextWithTimeout(url, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
   }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => ({
-    url: streamUrl,
+    url,
+    ms: Date.now() - startedAt,
     status: res.status,
     ok: res.ok,
     bodyLength: text.length,
     isHtml: isHtmlProbeResponse(res, text),
     hasPlaylist: hasPlaylistEntries(text),
-    bodySnippet: text.slice(0, 2e3)
+    nextUrl: hasPlaylistEntries(text) ? firstPlaylistEntryUrl(text, url) : null,
+    bodySnippet: text.slice(0, 300)
   })).catch((error) => ({
-    url: streamUrl,
+    url,
+    ms: Date.now() - startedAt,
     error: error && error.message
   }));
+}
+function diagProbeStream(streamUrl) {
+  const levels = [];
+  function next(url, depth) {
+    if (!url || depth > STREAM_HLS_PROBE_MAX_DEPTH + 1) return Promise.resolve(levels);
+    return diagProbeOneLevel(url).then((level) => {
+      levels.push(level);
+      if (level.hasPlaylist && level.nextUrl) return next(level.nextUrl, depth + 1);
+      return levels;
+    });
+  }
+  return next(streamUrl, 0);
 }
 function probeNuvioStream(nuvioStream) {
   return probeStreamPlayable(nuvioStream.url).then((playable) => playable ? nuvioStream : null);
