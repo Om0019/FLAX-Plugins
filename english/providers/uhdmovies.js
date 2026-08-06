@@ -63,3 +63,61 @@
   });
 }
 function getStreams(_0x2a657f,_0x5ae44d,_0x5d6dbc,_0xe3df52){var _0x7d8a16={_0x2662b6:0x1bd,_0x1b1b91:0x1c3},_0x460a0b={_0x125420:0x1fd},_0x332092={_0x57c3f9:0x1f0,_0x6c8ce8:0x1fe,_0x72767e:0x1bd},_0x46b0cb={_0x1228ef:0x1f0,_0x53a683:0x1c4},_0xdbbf80=_0x4d6001;console['log'](_0xdbbf80(0x1f9)+_0x5ae44d+'\x20'+_0x2a657f);var _0x3cc852=[];return getTmdbDetails(_0x2a657f,_0x5ae44d)[_0xdbbf80(_0x7d8a16._0x2662b6)](function(_0x91583d){var _0x2fa8bc=_0xdbbf80;if(!_0x91583d)return[];return console[_0x2fa8bc(_0x46b0cb._0x1228ef)]('[UHDMovies]\x20Title:\x20'+_0x91583d['title']+'\x20('+_0x91583d['year']+')'),searchByTitle(_0x91583d['title'],_0x91583d[_0x2fa8bc(_0x46b0cb._0x53a683)]);})[_0xdbbf80(0x1bd)](function(_0xb048d){var _0x4d0230={_0x18c129:0x1bd},_0x40e0b4=_0xdbbf80;if(!_0xb048d||_0xb048d[_0x40e0b4(0x201)]===0x0)return console[_0x40e0b4(_0x332092._0x57c3f9)](_0x40e0b4(_0x332092._0x6c8ce8)),[];var _0x20cb8a=_0x5ae44d==='series'||_0x5ae44d==='tv';function _0x5eb0e4(_0x211ad5){var _0x48f5a1=_0x40e0b4;if(_0x211ad5>=_0xb048d['length'])return Promise[_0x48f5a1(0x1cd)](_0x3cc852);var _0x4924cd=_0xb048d[_0x211ad5];console[_0x48f5a1(0x1f0)]('[UHDMovies]\x20Processing:\x20'+_0x4924cd['title']);var _0xc13372=_0x20cb8a&&_0x5d6dbc&&_0xe3df52?getTvEpisodeLink(_0x4924cd['url'],_0x5d6dbc,_0xe3df52):getMovieLinks(_0x4924cd[_0x48f5a1(0x1b6)]);return _0xc13372[_0x48f5a1(0x1bd)](function(_0x16f7ac){var _0x11db63=_0x48f5a1,_0x201d05=_0x16f7ac['map'](function(_0x3150f1){var _0x3890b4={_0x4874b5:0x1ba,_0x124fc:0x1b4,_0x332abd:0x1ac},_0x5a6eb6={_0x5a9904:0x1cc,_0x249788:0x1dd,_0x413553:0x1ac},_0x36b54d=_0x1514,_0x2123b3=_0x3150f1[_0x36b54d(0x1f2)];if(!_0x2123b3)return Promise[_0x36b54d(0x1cd)]([]);var _0x5f3c05=_0x2123b3['indexOf'](_0x36b54d(0x1fb))!==-0x1?bypassHrefli(_0x2123b3):Promise[_0x36b54d(0x1cd)](_0x2123b3);return _0x5f3c05['then'](function(_0x406993){var _0x178ce6=_0x36b54d;if(!_0x406993)return[];if(_0x406993['indexOf'](_0x178ce6(0x1d2))!==-0x1||_0x406993[_0x178ce6(_0x3890b4._0x4874b5)]('driveleech')!==-0x1)return extractDriveseedPage(_0x406993);if(_0x406993['indexOf']('video-seed')!==-0x1)return extractVideoSeed(_0x406993)['then'](function(_0x41518c){var _0xb01f8f=_0x178ce6;if(!_0x41518c)return[];return[{'name':_0xb01f8f(_0x5a6eb6._0x5a9904),'title':'UHDMovies\x20'+(_0x3150f1['quality']||'Unknown'),'url':_0x41518c,'quality':_0x3150f1[_0xb01f8f(_0x5a6eb6._0x249788)]||_0xb01f8f(_0x5a6eb6._0x413553)}];});return[{'name':_0x178ce6(0x1cc),'title':_0x178ce6(0x1f6)+(_0x3150f1[_0x178ce6(_0x3890b4._0x124fc)]||_0x3150f1['quality']||''),'url':_0x406993,'quality':_0x3150f1[_0x178ce6(0x1dd)]||_0x178ce6(_0x3890b4._0x332abd)}];});});return Promise[_0x11db63(0x1eb)](_0x201d05)[_0x11db63(_0x4d0230._0x18c129)](function(_0x37cf76){return _0x37cf76['forEach'](function(_0x1c3ec1){var _0x1cac60=_0x1514;_0x3cc852=_0x3cc852[_0x1cac60(0x1d3)](_0x1c3ec1);}),_0x5eb0e4(_0x211ad5+0x1);});});}return _0x5eb0e4(0x0)[_0x40e0b4(_0x332092._0x72767e)](function(_0x53dff2){var _0x3c9c4d={_0x3aa971:0x207},_0x52b9b7=_0x40e0b4;function _0x44e812(_0x4825ea){var _0xe20323=_0x1514,_0x6b7085=_0x4825ea['seekable']?0x1:0x0,_0x4b6aed=_0x4825ea['quality']||'',_0x247019=0x0;if(/^4K/i[_0xe20323(_0x3c9c4d._0x3aa971)](_0x4b6aed))_0x247019=0x4;else{if(/1080p/i[_0xe20323(0x207)](_0x4b6aed))_0x247019=0x3;else{if(/720p/i['test'](_0x4b6aed))_0x247019=0x2;else{if(/480p/i['test'](_0x4b6aed))_0x247019=0x1;}}}var _0x2c0274=0x0;if(/remux/i[_0xe20323(0x207)](_0x4b6aed))_0x2c0274=0x5;else{if(/blu.?ray/i['test'](_0x4b6aed))_0x2c0274=0x4;else{if(/web.?dl/i['test'](_0x4b6aed))_0x2c0274=0x3;else{if(/webrip/i['test'](_0x4b6aed))_0x2c0274=0x2;else{if(/hdrip|dvdrip|hdtv/i['test'](_0x4b6aed))_0x2c0274=0x1;}}}}return _0x247019*0x64+_0x2c0274*0xa+_0x6b7085;}return _0x53dff2[_0x52b9b7(0x1df)](function(_0x4b584c,_0x477b49){return _0x44e812(_0x477b49)-_0x44e812(_0x4b584c);}),_0x53dff2;});})[_0xdbbf80(_0x7d8a16._0x1b1b91)](function(_0x442ff6){var _0x53cc20=_0xdbbf80;return console['error'](_0x53cc20(0x1be)+_0x442ff6[_0x53cc20(_0x460a0b._0x125420)]),[];});}typeof module!==_0x4d6001(0x1db)&&module[_0x4d6001(0x1ef)]?module['exports']={'getStreams':getStreams}:global[_0x4d6001(0x1dc)]=getStreams;
+
+
+// ---------------------------------------------------------------------------
+// Appended (not part of the vendored file above): unifies this provider's
+// stream Name/Description with the upstream English Stremio addon's
+// src/stream-template.js layout, applied there at its HTTP boundary and here
+// as a post-processing wrap around the vendored getStreams, since Nuvio
+// scrapers have no such boundary and this file's obfuscated internals aren't
+// meant to be hand-edited:
+//   Name:        {{cached ? "\u26a1\ufe0f " : ""}}{{indexer}}
+//   Description: English{{container ? " \u2022 " + container : ""}}{{resolution ? " \u2022 " + resolution : ""}}
+// ---------------------------------------------------------------------------
+(function () {
+  var __NUVIO_PROVIDER_NAME__ = "UHDMovies";
+  var __streamContainerPattern = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+  var __streamResolutionPattern = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+
+  function __extractStreamContainer(url) {
+    var match = String(url || "").match(__streamContainerPattern);
+    return match ? match[1].toLowerCase() : null;
+  }
+
+  function __extractStreamResolution(stream) {
+    if (stream.quality && stream.quality !== "Unknown") return String(stream.quality).toLowerCase();
+    var text = (stream.title || "") + " " + (stream.name || "");
+    var match = text.match(__streamResolutionPattern);
+    if (!match) return null;
+    return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+  }
+
+  function __applyStreamTemplate(stream) {
+    var indexer = stream.name || __NUVIO_PROVIDER_NAME__;
+    var container = __extractStreamContainer(stream.url);
+    var resolution = __extractStreamResolution(stream);
+    var cached = stream.__cached === true || stream.cached === true;
+    var parts = ["English", container, resolution].filter(Boolean);
+
+    var out = {};
+    for (var key in stream) if (Object.prototype.hasOwnProperty.call(stream, key)) out[key] = stream[key];
+    out.name = cached ? ("\u26a1\ufe0f " + indexer) : indexer;
+    out.title = parts.length > 0 ? parts.join(" \u2022 ") : " ";
+    return out;
+  }
+
+  function __wrapGetStreams(original) {
+    return function (tmdbId, mediaType, seasonNum, episodeNum) {
+      return Promise.resolve(original(tmdbId, mediaType, seasonNum, episodeNum)).then(function (streams) {
+        return (streams || []).map(__applyStreamTemplate);
+      });
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports && typeof module.exports.getStreams === "function") {
+    module.exports.getStreams = __wrapGetStreams(module.exports.getStreams);
+  } else if (typeof global !== "undefined" && typeof global.getStreams === "function") {
+    global.getStreams = __wrapGetStreams(global.getStreams);
+  }
+})();

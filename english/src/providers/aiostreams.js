@@ -134,6 +134,43 @@ function findImdbId(tmdbId, mediaType) {
 }
 
 // ---------------------------------------------------------------------------
+// Stream Name/Description formatting, matching the upstream English Stremio
+// addon's src/stream-template.js layout (applied there at its HTTP boundary,
+// applied here directly since Nuvio scrapers have no such boundary):
+//   Name:        {cached ? "⚡️ " : ""}{indexer}
+//   Description: English{container ? " • " + container : ""}{resolution ? " • " + resolution : ""}
+// ---------------------------------------------------------------------------
+
+const STREAM_CONTAINER_PATTERN = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+const STREAM_RESOLUTION_PATTERN = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+
+function extractStreamContainer(url) {
+  const match = String(url || '').match(STREAM_CONTAINER_PATTERN);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function extractStreamResolution(stream) {
+  if (stream.quality && stream.quality !== 'Unknown') return String(stream.quality).toLowerCase();
+  const text = `${stream.title || ''} ${stream.name || ''}`;
+  const match = text.match(STREAM_RESOLUTION_PATTERN);
+  if (!match) return null;
+  return match[1].toLowerCase() === '4k' ? '2160p' : match[1].toLowerCase();
+}
+
+function applyStreamTemplate(stream) {
+  const indexer = stream.name || 'AIOStreams';
+  const container = extractStreamContainer(stream.url);
+  const resolution = extractStreamResolution(stream);
+  const cached = stream.__cached === true;
+
+  return {
+    ...stream,
+    name: cached ? `⚡️ ${indexer}` : indexer,
+    title: ['English', container, resolution].filter(Boolean).join(' • ') || ' '
+  };
+}
+
+// ---------------------------------------------------------------------------
 // AIOStreams search
 // ---------------------------------------------------------------------------
 
@@ -152,7 +189,7 @@ function requestAiostreamsStreams(url) {
           url: result.url,
           quality: (result.parsedFile && result.parsedFile.resolution) || null,
           size: result.size || null,
-          cached: result.cached === true
+          __cached: result.cached === true
         }))
         .filter((stream) => Boolean(stream.url));
     });
@@ -190,6 +227,7 @@ function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return findImdbId(tmdbId, mediaType)
     .then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum))
+    .then((streams) => streams.map(applyStreamTemplate))
     .catch((error) => {
       console.warn(`AIOStreams: ${error.message}`);
       return [];

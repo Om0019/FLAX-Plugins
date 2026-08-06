@@ -1,7 +1,22 @@
-// Built from src/providers/aiostreams.js for the restricted runtime Nuvio's local-scraper
-// sandbox provides -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > english/providers/aiostreams.js
-// Edit src/providers/aiostreams.js instead, then rebuild.
+var __defProp = Object.defineProperty;
+var __defProps = Object.defineProperties;
+var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+var __getOwnPropSymbols = Object.getOwnPropertySymbols;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __propIsEnum = Object.prototype.propertyIsEnumerable;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __spreadValues = (a, b) => {
+  for (var prop in b || (b = {}))
+    if (__hasOwnProp.call(b, prop))
+      __defNormalProp(a, prop, b[prop]);
+  if (__getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(b)) {
+      if (__propIsEnum.call(b, prop))
+        __defNormalProp(a, prop, b[prop]);
+    }
+  return a;
+};
+var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 const AIOSTREAMS_BASE_URL = "https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search";
 const AIOSTREAMS_UUID = "4b990cd7-9058-41f6-a099-224272656e63";
 const AIOSTREAMS_PASSWORD = "Jason001$";
@@ -69,6 +84,29 @@ function findImdbId(tmdbId, mediaType) {
     return data.imdb_id;
   });
 }
+const STREAM_CONTAINER_PATTERN = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+const STREAM_RESOLUTION_PATTERN = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+function extractStreamContainer(url) {
+  const match = String(url || "").match(STREAM_CONTAINER_PATTERN);
+  return match ? match[1].toLowerCase() : null;
+}
+function extractStreamResolution(stream) {
+  if (stream.quality && stream.quality !== "Unknown") return String(stream.quality).toLowerCase();
+  const text = `${stream.title || ""} ${stream.name || ""}`;
+  const match = text.match(STREAM_RESOLUTION_PATTERN);
+  if (!match) return null;
+  return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+}
+function applyStreamTemplate(stream) {
+  const indexer = stream.name || "AIOStreams";
+  const container = extractStreamContainer(stream.url);
+  const resolution = extractStreamResolution(stream);
+  const cached = stream.__cached === true;
+  return __spreadProps(__spreadValues({}, stream), {
+    name: cached ? `\u26A1\uFE0F ${indexer}` : indexer,
+    title: ["English", container, resolution].filter(Boolean).join(" \u2022 ") || " "
+  });
+}
 function requestAiostreamsStreams(url) {
   return fetchJsonWithTimeout(url, {
     headers: { Authorization: authHeader(), Accept: "application/json" }
@@ -81,7 +119,7 @@ function requestAiostreamsStreams(url) {
       url: result.url,
       quality: result.parsedFile && result.parsedFile.resolution || null,
       size: result.size || null,
-      cached: result.cached === true
+      __cached: result.cached === true
     })).filter((stream) => Boolean(stream.url));
   });
 }
@@ -98,7 +136,7 @@ function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
   });
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  return findImdbId(tmdbId, mediaType).then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum)).catch((error) => {
+  return findImdbId(tmdbId, mediaType).then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum)).then((streams) => streams.map(applyStreamTemplate)).catch((error) => {
     console.warn(`AIOStreams: ${error.message}`);
     return [];
   });
