@@ -1177,10 +1177,25 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
     return [];
   });
 }
-function toNuvioStream(internalStream, mediaTitle) {
+const STREAM_CONTAINER_PATTERN = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+const STREAM_RESOLUTION_PATTERN = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+function extractStreamContainer(url) {
+  const match = String(url || "").match(STREAM_CONTAINER_PATTERN);
+  return match ? match[1].toLowerCase() : null;
+}
+function extractStreamResolution(quality, title, name) {
+  if (quality && quality !== "Unknown") return String(quality).toLowerCase();
+  const text = `${title || ""} ${name || ""}`;
+  const match = text.match(STREAM_RESOLUTION_PATTERN);
+  if (!match) return null;
+  return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+}
+function toNuvioStream(internalStream) {
+  const container = extractStreamContainer(internalStream.url);
+  const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
   const nuvioStream = {
     name: internalStream.name,
-    title: mediaTitle ? `${internalStream.title} - ${mediaTitle}` : internalStream.title,
+    title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
     url: internalStream.url,
     quality: "Unknown",
     size: "Unknown",
@@ -1201,7 +1216,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     if (!details || !details.title) return [];
     return scrape(details.title, details.originalTitle, details.year, "series", seasonNum, episodeNum, { extraTitles }).then(
-      (results) => (results || []).map((stream) => toNuvioStream(stream, details.title))
+      (results) => (results || []).map((stream) => toNuvioStream(stream))
     );
   }).catch((error) => {
     console.error("Novelas360 (Nuvio): getStreams failed:", error && error.message);

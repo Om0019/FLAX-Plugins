@@ -458,3 +458,61 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
   });
 }
 module.exports = { getStreams };
+
+
+// ---------------------------------------------------------------------------
+// Appended (not part of the vendored file above): unifies this provider's
+// stream Name/Description with the upstream English Stremio addon's
+// src/stream-template.js layout, applied there at its HTTP boundary and here
+// as a post-processing wrap around the vendored getStreams, since Nuvio
+// scrapers have no such boundary and this file's obfuscated internals aren't
+// meant to be hand-edited:
+//   Name:        {{cached ? "\u26a1\ufe0f " : ""}}{{indexer}}
+//   Description: English{{container ? " \u2022 " + container : ""}}{{resolution ? " \u2022 " + resolution : ""}}
+// ---------------------------------------------------------------------------
+(function () {
+  var __NUVIO_PROVIDER_NAME__ = "VidLink";
+  var __streamContainerPattern = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+  var __streamResolutionPattern = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+
+  function __extractStreamContainer(url) {
+    var match = String(url || "").match(__streamContainerPattern);
+    return match ? match[1].toLowerCase() : null;
+  }
+
+  function __extractStreamResolution(stream) {
+    if (stream.quality && stream.quality !== "Unknown") return String(stream.quality).toLowerCase();
+    var text = (stream.title || "") + " " + (stream.name || "");
+    var match = text.match(__streamResolutionPattern);
+    if (!match) return null;
+    return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+  }
+
+  function __applyStreamTemplate(stream) {
+    var indexer = stream.name || __NUVIO_PROVIDER_NAME__;
+    var container = __extractStreamContainer(stream.url);
+    var resolution = __extractStreamResolution(stream);
+    var cached = stream.__cached === true || stream.cached === true;
+    var parts = ["English", container, resolution].filter(Boolean);
+
+    var out = {};
+    for (var key in stream) if (Object.prototype.hasOwnProperty.call(stream, key)) out[key] = stream[key];
+    out.name = cached ? ("\u26a1\ufe0f " + indexer) : indexer;
+    out.title = parts.length > 0 ? parts.join(" \u2022 ") : " ";
+    return out;
+  }
+
+  function __wrapGetStreams(original) {
+    return function (tmdbId, mediaType, seasonNum, episodeNum) {
+      return Promise.resolve(original(tmdbId, mediaType, seasonNum, episodeNum)).then(function (streams) {
+        return (streams || []).map(__applyStreamTemplate);
+      });
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports && typeof module.exports.getStreams === "function") {
+    module.exports.getStreams = __wrapGetStreams(module.exports.getStreams);
+  } else if (typeof global !== "undefined" && typeof global.getStreams === "function") {
+    global.getStreams = __wrapGetStreams(global.getStreams);
+  }
+})();
