@@ -55,6 +55,10 @@ function safe(promiseFn) {
     });
 }
 
+function oneLine(text) {
+  return String(text).replace(/\s+/g, ' ').trim();
+}
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   var checks = [
     { name: 'runtime', fn: function () { return Promise.resolve('typeof global=' + typeof global + ' HermesInternal=' + (typeof HermesInternal !== 'undefined')); } },
@@ -72,14 +76,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return Promise.all(
     checks.map(function (check) {
       return safe(check.fn).then(function (result) {
-        return check.name + ' :: ' + result;
+        return oneLine(check.name + ' :: ' + result);
       });
     })
   ).then(function (lines) {
     return lines.map(function (line, i) {
+      var padded = i < 10 ? '0' + i : '' + i;
       return {
-        name: 'DIAG',
-        title: line,
+        name: padded + ' ' + line,
+        title: padded + ' ' + line,
         url: 'https://example.com/diag-not-playable-' + i + '.mp4',
         quality: null,
         size: null
