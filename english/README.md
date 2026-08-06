@@ -64,10 +64,9 @@ those credentials should stay private — anyone who can fetch
 `providers/aiostreams.js`'s raw contents can read them.
 
 `src/providers/aiostreams.js` is the hand-authored, readable source;
-`providers/aiostreams.js` is a built artifact -- Nuvio's sandbox runs on
-Hermes targeting ES2016, which doesn't understand the object spread
-(`{...x}`, ES2018) the source file uses, unlike the already-restricted-target
-vendored providers above. Rebuild after editing the source with:
+`providers/aiostreams.js` is a built artifact -- Nuvio's sandbox targets
+ES2016, unlike the already-restricted-target vendored providers above.
+Rebuild after editing the source with:
 
 ```
 npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > providers/aiostreams.js
@@ -78,3 +77,21 @@ even before AIOStreams replaced it, it wasn't run via its own `getStreams` —
 the source addon fetched `torrentio.strem.fun` directly using a debrid
 provider (TorBox) API key, a fundamentally different shape than a
 self-contained Nuvio local scraper.
+
+## Diagnostics
+
+`src/providers/diag.js` is kept deliberately unbuilt and out of
+`manifest.json` — it is not a stream source. It probes the sandbox from
+inside the running app (which globals exist, whether `fetch` honours an
+AbortSignal, whether cheerio resolves, whether TMDB/AIOStreams are
+reachable) and reports each result as a fake, non-playable stream title,
+so the answers are readable from Nuvio's own source list without device
+logs. It is what identified the missing `setTimeout` documented in the
+root README.
+
+To use it again: build it like any other provider and add an entry
+pointing at `providers/diag.js`, then remove both when done.
+
+For most problems, reach for `tools/run-in-sandbox.js` at the repo root
+first — it reproduces the sandbox locally (no timers) and needs no
+device.
