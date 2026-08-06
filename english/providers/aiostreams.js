@@ -91,11 +91,27 @@ function extractStreamContainer(url) {
   return match ? match[1].toLowerCase() : null;
 }
 function extractStreamResolution(stream) {
-  if (stream.quality && stream.quality !== "Unknown") return String(stream.quality).toLowerCase();
-  const text = `${stream.title || ""} ${stream.name || ""}`;
+  const text = `${stream.quality || ""} ${stream.title || ""} ${stream.name || ""}`;
   const match = text.match(STREAM_RESOLUTION_PATTERN);
   if (!match) return null;
   return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+}
+function formatByteSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${Math.round(value * 10) / 10} ${units[unitIndex]}`;
+}
+const SIZE_STRING_PATTERN = /^\s*\d+(\.\d+)?\s*(B|KB|MB|GB|TB)\s*$/i;
+function sanitizeSizeString(value) {
+  if (typeof value !== "string") return null;
+  return SIZE_STRING_PATTERN.test(value) ? value.trim() : null;
 }
 function applyStreamTemplate(stream) {
   const indexer = stream.name || "AIOStreams";
@@ -104,6 +120,8 @@ function applyStreamTemplate(stream) {
   const cached = stream.__cached === true;
   return __spreadProps(__spreadValues({}, stream), {
     name: cached ? `\u26A1\uFE0F ${indexer}` : indexer,
+    quality: resolution || null,
+    size: typeof stream.size === "number" ? formatByteSize(stream.size) : sanitizeSizeString(stream.size),
     title: ["English", container, resolution].filter(Boolean).join(" \u2022 ") || " "
   });
 }
