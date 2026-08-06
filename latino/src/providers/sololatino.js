@@ -1625,7 +1625,13 @@ const API_TIMEOUT_MS = 5000;
 const PROBE_TIMEOUT_MS = 2500;
 
 const REFUSAL_STATUSES = new Set([401, 403, 405, 429, 503]);
-const REFUSAL_TTL_MS = 5 * 60 * 1000;
+// Nuvio keeps this module loaded across an entire browsing session, so a
+// single transient block (e.g. one rate-limited request while the user is
+// testing several titles back-to-back) used to silence every subsequent
+// getStreams() call -- for every title, not just the one that got refused --
+// for a full 5 minutes. Shortened so one blip doesn't read as "this addon
+// doesn't work" for most of a testing session.
+const REFUSAL_TTL_MS = 45 * 1000;
 const refusalCache = createTtlCache({ maxEntries: 4 });
 const REFUSAL_KEY = 'sololatino.net';
 

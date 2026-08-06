@@ -1,12 +1,12 @@
 {
   "name": "Latino Nuvio Providers",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "scrapers": [
     {
       "id": "SoloLatino",
       "name": "SoloLatino",
       "description": "Spanish-dubbed/subtitled movies and series scraped from sololatino.net. embed69 links (its main working source) now resolve: implements AES-256-CBC decrypt and the SHA-256 proof-of-work it requires from scratch, since Nuvio's sandbox has no crypto module.",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "author": "Ported from the Latino Stremio addon",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/sololatino.js",
