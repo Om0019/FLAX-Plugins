@@ -67,6 +67,22 @@ Edwards `eval` unpacking, VOE, Dood, Streamtape, Nupload, MediaFire,
 VidGuard, Xupalace multi-server pages, JS-redirect and iframe chasing — is
 ported and working.
 
+## Card subtitle, ordering, and list size
+
+Every provider already probes each candidate link (a Range/HEAD request)
+before returning it and drops anything that isn't actually playable, so
+these lists were already working-links-only. What they lacked was a useful
+subtitle: Latino sources rarely expose a real resolution, and Nuvio's card
+renders `quality`/`size` directly rather than the descriptive `title`
+string — so a stream with no known resolution showed a blank subtitle,
+making every card from a given provider look identical except for its name.
+`quality` now falls back to the embed server's own label (e.g. "Voe",
+"Streamtape") stripped of its leading flag/arrow emoji when no real
+resolution is found, so cards from the same provider stay distinguishable.
+Each provider's own contribution to the merged list is also capped at 5
+(known resolution sorted first) instead of returning everything it found,
+so nine providers combined don't turn into a huge list for one title.
+
 ## Build step
 
 `src/providers/*.js` are the hand-authored, readable sources. Nuvio's

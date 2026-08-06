@@ -1552,6 +1552,22 @@ function probeStreamPlayable(streamUrl) {
 function probeNuvioStream(nuvioStream) {
   return probeStreamPlayable(nuvioStream.url).then((playable) => playable ? nuvioStream : null);
 }
+function deriveServerLabel(internalStream) {
+  const raw = String(internalStream && internalStream.title || "").trim();
+  if (!raw) return null;
+  const stripped = raw.replace(/^[^\w(]+/, "").trim();
+  return stripped || null;
+}
+const MAX_STREAMS_PER_PROVIDER = 5;
+const STREAM_RESOLUTION_RANK = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
+function finalizeStreams(streams) {
+  return (streams || []).map((stream, index) => ({ stream, index })).sort((a, b) => {
+    const rankA = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, a.stream.quality) ? STREAM_RESOLUTION_RANK[a.stream.quality] : -1;
+    const rankB = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, b.stream.quality) ? STREAM_RESOLUTION_RANK[b.stream.quality] : -1;
+    if (rankA !== rankB) return rankB - rankA;
+    return a.index - b.index;
+  }).slice(0, MAX_STREAMS_PER_PROVIDER).map((entry) => entry.stream);
+}
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
@@ -1559,7 +1575,7 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: resolution || null,
+    quality: resolution || deriveServerLabel(internalStream) || null,
     size: null,
     provider: "pelispedia"
   };
@@ -1570,7 +1586,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     if (!details || !details.title) return [];
     return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
-      (results) => mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
+      (results) => mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream)).then(finalizeStreams)
     );
   }).catch((error) => {
     console.error("PelisPedia (Nuvio): getStreams failed:", error && error.message);

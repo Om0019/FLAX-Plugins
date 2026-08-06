@@ -74,6 +74,98 @@ function fetchJsonWithTimeout(url, options, timeoutMs) {
     return { res, data };
   });
 }
+function fetchTextWithTimeout(url, options, timeoutMs) {
+  return fetchWithTimeout(url, options, timeoutMs).then((res) => res.text().then((text) => ({ res, text })));
+}
+const STREAM_PROBE_RANGE_BYTES = 2048;
+const STREAM_PROBE_TIMEOUT_MS = 5e3;
+const STREAM_PROBE_CONCURRENCY = 4;
+function isHtmlProbeResponse(res, text) {
+  const contentType = (res.headers && res.headers.get && res.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html")) return true;
+  return /^\s*<(!doctype|html)/i.test(text || "");
+}
+function hasPlaylistEntries(body) {
+  return body.includes("#EXT-X-STREAM-INF") || body.includes("#EXTINF");
+}
+function firstPlaylistEntryUrl(body, manifestUrl) {
+  const lines = String(body || "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    try {
+      return new URL(trimmed, manifestUrl).toString();
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+function probeHlsPlayback(body, manifestUrl, depth) {
+  const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
+  if (!resourceUrl) return Promise.resolve(false);
+  if (depth >= 1) {
+    return fetchWithTimeout(resourceUrl, { method: "HEAD" }, STREAM_PROBE_TIMEOUT_MS).then((res) => ![401, 403, 404, 410, 451].includes(res.status)).catch(() => true);
+  }
+  return fetchTextWithTimeout(resourceUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
+    return text.length > 0;
+  }).catch(() => false);
+}
+function probeStreamPlayable(streamUrl) {
+  return fetchTextWithTimeout(streamUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+    if ([401, 403, 404, 410, 451].includes(res.status)) return false;
+    if (!res.ok && res.status !== 206) return false;
+    if (isHtmlProbeResponse(res, text)) return false;
+    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
+    return text.length > 0;
+  }).catch(() => false);
+}
+function mapWithConcurrency(items, concurrency, worker) {
+  return new Promise((resolve) => {
+    if (items.length === 0) {
+      resolve([]);
+      return;
+    }
+    const results = [];
+    let cursor = 0;
+    let doneCount = 0;
+    function runNext() {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        Promise.resolve().then(() => worker(items[index], index)).catch(() => null).then((result) => {
+          if (result) results.push(result);
+          doneCount += 1;
+          if (doneCount === items.length) resolve(results);
+          else runNext();
+        });
+        return;
+      }
+    }
+    const runners = Math.max(1, Math.min(concurrency, items.length));
+    for (let i = 0; i < runners; i += 1) runNext();
+  });
+}
+const MAX_STREAMS_PER_PROVIDER = 5;
+const STREAM_RESOLUTION_RANK = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
+function finalizeStreams(streams) {
+  return streams.map((stream, index) => ({ stream, index })).sort((a, b) => {
+    const cachedA = a.stream.__cached === true ? 1 : 0;
+    const cachedB = b.stream.__cached === true ? 1 : 0;
+    if (cachedA !== cachedB) return cachedB - cachedA;
+    const rankA = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, a.stream.quality) ? STREAM_RESOLUTION_RANK[a.stream.quality] : -1;
+    const rankB = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, b.stream.quality) ? STREAM_RESOLUTION_RANK[b.stream.quality] : -1;
+    if (rankA !== rankB) return rankB - rankA;
+    return a.index - b.index;
+  }).slice(0, MAX_STREAMS_PER_PROVIDER).map((entry) => entry.stream);
+}
 function findImdbId(tmdbId, mediaType) {
   const tmdbType = mediaType === "tv" ? "tv" : "movie";
   const url = `${TMDB_BASE_URL}/${tmdbType}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
@@ -154,7 +246,11 @@ function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
   });
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  return findImdbId(tmdbId, mediaType).then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum)).then((streams) => streams.map(applyStreamTemplate)).catch((error) => {
+  return findImdbId(tmdbId, mediaType).then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum)).then((streams) => streams.map(applyStreamTemplate)).then((streams) => mapWithConcurrency(
+    streams,
+    STREAM_PROBE_CONCURRENCY,
+    (stream) => probeStreamPlayable(stream.url).then((playable) => playable ? stream : null)
+  )).then(finalizeStreams).catch((error) => {
     console.warn(`AIOStreams: ${error.message}`);
     return [];
   });

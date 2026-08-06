@@ -1867,6 +1867,40 @@ function probeNuvioStream(nuvioStream) {
   return probeStreamPlayable(nuvioStream.url).then((playable) => (playable ? nuvioStream : null));
 }
 
+// Latino sources rarely expose a real resolution, so the quality subtitle
+// (the only per-stream text Nuvio's card actually renders -- title is not
+// shown) would otherwise stay blank and every stream card would be
+// indistinguishable from the next except by provider name. Falls back to
+// the embed server's own label (e.g. "Voe", "Streamtape") stripped of its
+// leading flag/arrow emoji, so streams from the same provider can still be
+// told apart.
+function deriveServerLabel(internalStream) {
+  const raw = String((internalStream && internalStream.title) || '').trim();
+  if (!raw) return null;
+  const stripped = raw.replace(/^[^\w(]+/, '').trim();
+  return stripped || null;
+}
+
+// Caps each provider's own contribution to the merged stream list -- with
+// nine Latino providers each returning everything they find, the combined
+// list Nuvio shows can otherwise run into the dozens for one title. Known
+// resolutions sort first (higher first), everything else keeps the order
+// probing produced it in.
+const MAX_STREAMS_PER_PROVIDER = 5;
+const STREAM_RESOLUTION_RANK = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1, '360p': 0 };
+function finalizeStreams(streams) {
+  return (streams || [])
+    .map((stream, index) => ({ stream, index }))
+    .sort((a, b) => {
+      const rankA = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, a.stream.quality) ? STREAM_RESOLUTION_RANK[a.stream.quality] : -1;
+      const rankB = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, b.stream.quality) ? STREAM_RESOLUTION_RANK[b.stream.quality] : -1;
+      if (rankA !== rankB) return rankB - rankA;
+      return a.index - b.index;
+    })
+    .slice(0, MAX_STREAMS_PER_PROVIDER)
+    .map((entry) => entry.stream);
+}
+
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
@@ -1874,7 +1908,7 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ['Latino', container, resolution].filter(Boolean).join(' • ') || ' ',
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: resolution || null,
+    quality: resolution || deriveServerLabel(internalStream) || null,
     size: null,
     provider: 'ennovelas'
   };
@@ -1902,7 +1936,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       if (!details || !details.title) return [];
 
       return scrape(details.title, details.originalTitle, details.year, 'series', seasonNum, episodeNum, { extraTitles }).then((results) =>
-        mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
+        mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream)).then(finalizeStreams)
       );
     })
     .catch((error) => {
