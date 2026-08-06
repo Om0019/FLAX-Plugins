@@ -1264,7 +1264,7 @@ function probeHlsPlayback(body, manifestUrl, depth) {
     if (!res.ok && res.status !== 206) return false;
     if (isHtmlProbeResponse(res, text)) return false;
     if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
-    return true;
+    return text.length > 0;
   }).catch(() => false);
 }
 function probeStreamPlayable(streamUrl) {
@@ -1275,7 +1275,7 @@ function probeStreamPlayable(streamUrl) {
     if (!res.ok && res.status !== 206) return false;
     if (isHtmlProbeResponse(res, text)) return false;
     if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
-    return true;
+    return text.length > 0;
   }).catch(() => false);
 }
 function probeNuvioStream(nuvioStream) {
