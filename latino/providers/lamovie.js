@@ -1526,22 +1526,44 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: "Unknown",
-    size: "Unknown",
+    quality: resolution || null,
+    size: null,
     provider: "lamovie"
   };
   return nuvioStream;
 }
+function diagStream(text) {
+  return {
+    name: "\u26A0\uFE0F LaMovie diag",
+    title: String(text).replace(/\s+/g, " ").slice(0, 300),
+    url: "https://example.com/diag-not-playable.mp4",
+    quality: null,
+    size: null,
+    provider: "lamovie"
+  };
+}
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
+  const trail = [];
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
+    trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : "tmdb: no details/title");
+    trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
     if (!details || !details.title) return [];
-    return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
-      (results) => mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
-    );
-  }).catch((error) => {
+    return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) => {
+      trail.push(`scrape: ${(results || []).length} raw result(s)`);
+      return mapWithConcurrency(
+        (results || []).map((stream) => toNuvioStream(stream)),
+        STREAM_PROBE_CONCURRENCY,
+        (nuvioStream) => probeNuvioStream(nuvioStream)
+      ).then((probed) => {
+        trail.push(`probe: ${probed.length} survived of ${(results || []).length}`);
+        return probed;
+      });
+    });
+  }).then((streams) => streams && streams.length > 0 ? streams : [diagStream(trail.join(" | "))]).catch((error) => {
     console.error("LaMovie (Nuvio): getStreams failed:", error && error.message);
-    return [];
+    trail.push(`THREW: ${error && error.message}`);
+    return [diagStream(trail.join(" | "))];
   });
 }
 if (typeof module !== "undefined" && module.exports) {

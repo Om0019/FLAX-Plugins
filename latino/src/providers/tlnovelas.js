@@ -1780,8 +1780,8 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ['Latino', container, resolution].filter(Boolean).join(' • ') || ' ',
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: 'Unknown',
-    size: 'Unknown',
+    quality: resolution || null,
+    size: null,
     provider: 'tlnovelas'
   };
 
@@ -1797,23 +1797,50 @@ function toNuvioStream(internalStream) {
  * @param {number|null} episodeNum
  * @returns {Promise<Array<object>>}
  */
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  if (mediaType !== 'tv') return Promise.resolve([]);
+// Nuvio's sandbox exposes no device logs, so when getStreams() would
+// otherwise silently resolve to [] -- the same "empty array, no error"
+// shape a genuine no-match case produces -- there's no way to tell that
+// apart from a bug from inside the app. Report a one-line trail of what
+// each stage actually did as a single non-playable stream instead, so it's
+// readable straight from Nuvio's own stream list.
+function diagStream(text) {
+  return {
+    name: '⚠️ TLNovelas diag',
+    title: String(text).replace(/\s+/g, ' ').slice(0, 300),
+    url: 'https://example.com/diag-not-playable.mp4',
+    quality: null,
+    size: null,
+    provider: 'tlnovelas'
+  };
+}
 
-  // TMDB details and its translations are independent lookups; fetching
-  // them serially cost a full extra round trip before the scrape could even
-  // start.
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+  if (mediaType !== 'tv') return Promise.resolve([diagStream('mediaType is not tv (TLNovelas is series-only): ' + mediaType)]);
+  const trail = [];
+
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
     .then(([details, extraTitles]) => {
+      trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : 'tmdb: no details/title');
+      trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
       if (!details || !details.title) return [];
 
-      return scrape(details.title, details.originalTitle, details.year, 'series', seasonNum, episodeNum, { extraTitles }).then((results) =>
-        mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
-      );
+      return scrape(details.title, details.originalTitle, details.year, 'series', seasonNum, episodeNum, { extraTitles }).then((results) => {
+        trail.push(`scrape: ${(results || []).length} raw result(s)`);
+        return mapWithConcurrency(
+          (results || []).map((stream) => toNuvioStream(stream)),
+          STREAM_PROBE_CONCURRENCY,
+          (nuvioStream) => probeNuvioStream(nuvioStream)
+        ).then((probed) => {
+          trail.push(`probe: ${probed.length} survived of ${(results || []).length}`);
+          return probed;
+        });
+      });
     })
+    .then((streams) => (streams && streams.length > 0 ? streams : [diagStream(trail.join(' | '))]))
     .catch((error) => {
       console.error('TLNovelas (Nuvio): getStreams failed:', error && error.message);
-      return [];
+      trail.push(`THREW: ${error && error.message}`);
+      return [diagStream(trail.join(' | '))];
     });
 }
 

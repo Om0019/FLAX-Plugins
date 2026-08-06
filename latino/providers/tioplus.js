@@ -1762,8 +1762,8 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: "Unknown",
-    size: "Unknown",
+    quality: resolution || null,
+    size: null,
     provider: "tioplus"
   };
   return nuvioStream;
