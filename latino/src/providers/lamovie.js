@@ -1957,23 +1957,50 @@ function toNuvioStream(internalStream) {
  * @param {number|null} episodeNum
  * @returns {Promise<Array<object>>}
  */
+// Nuvio's sandbox exposes no device logs, so when getStreams() would
+// otherwise silently resolve to [] -- the same "empty array, no error"
+// shape a genuine no-match case produces -- there's no way to tell that
+// apart from a bug from inside the app. Report a one-line trail of what
+// each stage actually did as a single non-playable stream instead, so it's
+// readable straight from Nuvio's own stream list.
+function diagStream(text) {
+  return {
+    name: '⚠️ LaMovie diag',
+    title: String(text).replace(/\s+/g, ' ').slice(0, 300),
+    url: 'https://example.com/diag-not-playable.mp4',
+    quality: null,
+    size: null,
+    provider: 'lamovie'
+  };
+}
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === 'tv' ? 'series' : 'movie';
+  const trail = [];
 
-  // TMDB details and its translations are independent lookups; fetching
-  // them serially cost a full extra round trip before the scrape could even
-  // start.
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
     .then(([details, extraTitles]) => {
+      trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : 'tmdb: no details/title');
+      trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
       if (!details || !details.title) return [];
 
-      return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
-        mapWithConcurrency((results || []).map((stream) => toNuvioStream(stream)), STREAM_PROBE_CONCURRENCY, (nuvioStream) => probeNuvioStream(nuvioStream))
-      );
+      return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) => {
+        trail.push(`scrape: ${(results || []).length} raw result(s)`);
+        return mapWithConcurrency(
+          (results || []).map((stream) => toNuvioStream(stream)),
+          STREAM_PROBE_CONCURRENCY,
+          (nuvioStream) => probeNuvioStream(nuvioStream)
+        ).then((probed) => {
+          trail.push(`probe: ${probed.length} survived of ${(results || []).length}`);
+          return probed;
+        });
+      });
     })
+    .then((streams) => (streams && streams.length > 0 ? streams : [diagStream(trail.join(' | '))]))
     .catch((error) => {
       console.error('LaMovie (Nuvio): getStreams failed:', error && error.message);
-      return [];
+      trail.push(`THREW: ${error && error.message}`);
+      return [diagStream(trail.join(' | '))];
     });
 }
 
