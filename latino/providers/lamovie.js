@@ -1507,6 +1507,22 @@ function probeStreamPlayable(streamUrl) {
     return text.length > 0;
   }).catch(() => false);
 }
+function diagProbeStream(streamUrl) {
+  return fetchTextWithTimeout(streamUrl, {
+    headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
+  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => ({
+    url: streamUrl,
+    status: res.status,
+    ok: res.ok,
+    bodyLength: text.length,
+    isHtml: isHtmlProbeResponse(res, text),
+    hasPlaylist: hasPlaylistEntries(text),
+    bodySnippet: text.slice(0, 2e3)
+  })).catch((error) => ({
+    url: streamUrl,
+    error: error && error.message
+  }));
+}
 function probeNuvioStream(nuvioStream) {
   return probeStreamPlayable(nuvioStream.url).then((playable) => playable ? nuvioStream : null);
 }
@@ -1566,6 +1582,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
   const trail = [];
   let lastTitle = null;
+  let unplayedNuvioStreams = null;
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : "tmdb: no details/title");
     trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
@@ -1573,17 +1590,26 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     lastTitle = details.title;
     return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) => {
       trail.push(`scrape: ${(results || []).length} raw result(s)`);
+      const rawNuvioStreams = (results || []).map((stream) => toNuvioStream(stream));
       return mapWithConcurrency(
-        (results || []).map((stream) => toNuvioStream(stream)),
+        rawNuvioStreams,
         STREAM_PROBE_CONCURRENCY,
         (nuvioStream) => probeNuvioStream(nuvioStream)
       ).then((probed) => {
-        trail.push(`probe: ${probed.length} survived of ${(results || []).length}`);
+        trail.push(`probe: ${probed.length} survived of ${rawNuvioStreams.length}`);
+        if (probed.length === 0 && rawNuvioStreams.length > 0) unplayedNuvioStreams = rawNuvioStreams;
         return probed;
       });
     });
   }).then((streams) => {
     if (streams && streams.length > 0) return streams;
+    if (unplayedNuvioStreams && unplayedNuvioStreams.length > 0) {
+      return diagProbeStream(unplayedNuvioStreams[0].url).then((probeDiag) => {
+        trail.push(`probeDiag: ${JSON.stringify(probeDiag).slice(0, 200)}`);
+        reportDiag({ provider: "LaMovie", tmdbId, mediaType, trail, probeDiag });
+        return [diagStream(trail.join(" | "))];
+      });
+    }
     if (!lastTitle) {
       reportDiag({ provider: "LaMovie", tmdbId, mediaType, trail });
       return [diagStream(trail.join(" | "))];
