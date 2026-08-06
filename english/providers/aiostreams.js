@@ -127,7 +127,7 @@ function probeStreamPlayable(streamUrl) {
     return text.length > 0;
   }).catch(() => false);
 }
-function mapWithConcurrency(items, concurrency, worker) {
+function mapWithConcurrency(items, concurrency, worker, maxResults) {
   return new Promise((resolve) => {
     if (items.length === 0) {
       resolve([]);
@@ -136,14 +136,22 @@ function mapWithConcurrency(items, concurrency, worker) {
     const results = [];
     let cursor = 0;
     let doneCount = 0;
+    let settled = false;
+    function finish() {
+      if (settled) return;
+      settled = true;
+      resolve(results);
+    }
     function runNext() {
       while (cursor < items.length) {
         const index = cursor;
         cursor += 1;
         Promise.resolve().then(() => worker(items[index], index)).catch(() => null).then((result) => {
+          if (settled) return;
           if (result) results.push(result);
           doneCount += 1;
-          if (doneCount === items.length) resolve(results);
+          if (maxResults && results.length >= maxResults) finish();
+          else if (doneCount === items.length) finish();
           else runNext();
         });
         return;
@@ -249,7 +257,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return findImdbId(tmdbId, mediaType).then((imdbId) => fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum)).then((streams) => streams.map(applyStreamTemplate)).then((streams) => mapWithConcurrency(
     streams,
     STREAM_PROBE_CONCURRENCY,
-    (stream) => probeStreamPlayable(stream.url).then((playable) => playable ? stream : null)
+    (stream) => probeStreamPlayable(stream.url).then((playable) => playable ? stream : null),
+    MAX_STREAMS_PER_PROVIDER
   )).then(finalizeStreams).catch((error) => {
     console.warn(`AIOStreams: ${error.message}`);
     return [];
