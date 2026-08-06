@@ -2239,21 +2239,43 @@ function probeStreamPlayable(streamUrl) {
 // collapsing everything to a boolean. Only invoked when every candidate
 // already failed the real probe, so it doesn't add extra requests to the
 // normal path.
-function diagProbeStream(streamUrl) {
-  return fetchTextWithTimeout(streamUrl, {
+function diagProbeOneLevel(url) {
+  const startedAt = Date.now();
+  return fetchTextWithTimeout(url, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
   }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => ({
-    url: streamUrl,
+    url,
+    ms: Date.now() - startedAt,
     status: res.status,
     ok: res.ok,
     bodyLength: text.length,
     isHtml: isHtmlProbeResponse(res, text),
     hasPlaylist: hasPlaylistEntries(text),
-    bodySnippet: text.slice(0, 2000)
+    nextUrl: hasPlaylistEntries(text) ? firstPlaylistEntryUrl(text, url) : null,
+    bodySnippet: text.slice(0, 300)
   })).catch((error) => ({
-    url: streamUrl,
+    url,
+    ms: Date.now() - startedAt,
     error: error && error.message
   }));
+}
+
+// Chases the exact same manifest -> variant -> segment chain
+// probeStreamPlayable()/probeHlsPlayback() do, but instead of collapsing
+// each hop to a boolean, records status/timing/error for every level. Only
+// invoked when the real (boolean) probe already rejected every candidate,
+// so it costs nothing on the normal working path.
+function diagProbeStream(streamUrl) {
+  const levels = [];
+  function next(url, depth) {
+    if (!url || depth > STREAM_HLS_PROBE_MAX_DEPTH + 1) return Promise.resolve(levels);
+    return diagProbeOneLevel(url).then((level) => {
+      levels.push(level);
+      if (level.hasPlaylist && level.nextUrl) return next(level.nextUrl, depth + 1);
+      return levels;
+    });
+  }
+  return next(streamUrl, 0);
 }
 
 function probeNuvioStream(nuvioStream) {
