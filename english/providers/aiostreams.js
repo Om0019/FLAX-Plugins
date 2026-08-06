@@ -112,11 +112,7 @@ function findImdbId(tmdbId, mediaType) {
 // AIOStreams search
 // ---------------------------------------------------------------------------
 
-function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
-  const type = mediaType === 'tv' ? 'series' : 'movie';
-  const id = type === 'series' ? `${imdbId}:${seasonNum || 1}:${episodeNum || 1}` : imdbId;
-  const url = `${AIOSTREAMS_BASE_URL}?type=${type}&id=${encodeURIComponent(id)}`;
-
+function requestAiostreamsStreams(url) {
   return fetchJsonWithTimeout(url, {
     headers: { Authorization: authHeader(), Accept: 'application/json' }
   }, AIOSTREAMS_TIMEOUT_MS)
@@ -134,6 +130,24 @@ function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
           cached: result.cached === true
         }))
         .filter((stream) => Boolean(stream.url));
+    });
+}
+
+// The instance backing AIOSTREAMS_BASE_URL is observed to fail transiently
+// (timeout, or a 200 with zero results because one of its upstream indexers
+// timed out server-side) on an occasional single request even when an
+// immediately-following request for the same id succeeds, so one retry is
+// given before giving up -- both on a thrown error and on an empty result.
+function fetchAiostreamsStreams(imdbId, mediaType, seasonNum, episodeNum) {
+  const type = mediaType === 'tv' ? 'series' : 'movie';
+  const id = type === 'series' ? `${imdbId}:${seasonNum || 1}:${episodeNum || 1}` : imdbId;
+  const url = `${AIOSTREAMS_BASE_URL}?type=${type}&id=${encodeURIComponent(id)}`;
+
+  return requestAiostreamsStreams(url)
+    .then((streams) => (streams.length > 0 ? streams : requestAiostreamsStreams(url)))
+    .catch((error) => {
+      console.warn(`AIOStreams request failed, retrying once: ${error.message}`);
+      return requestAiostreamsStreams(url);
     })
     .catch((error) => {
       console.warn(`AIOStreams request failed: ${error.message}`);
