@@ -1543,6 +1543,22 @@ function diagProbeStream(streamUrl) {
 function probeNuvioStream(nuvioStream) {
   return probeStreamPlayable(nuvioStream.url).then((playable) => playable ? nuvioStream : null);
 }
+function deriveServerLabel(internalStream) {
+  const raw = String(internalStream && internalStream.title || "").trim();
+  if (!raw) return null;
+  const stripped = raw.replace(/^[^\w(]+/, "").trim();
+  return stripped || null;
+}
+const MAX_STREAMS_PER_PROVIDER = 2;
+const STREAM_RESOLUTION_RANK = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
+function finalizeStreams(streams) {
+  return (streams || []).map((stream, index) => ({ stream, index })).sort((a, b) => {
+    const rankA = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, a.stream.quality) ? STREAM_RESOLUTION_RANK[a.stream.quality] : -1;
+    const rankB = Object.prototype.hasOwnProperty.call(STREAM_RESOLUTION_RANK, b.stream.quality) ? STREAM_RESOLUTION_RANK[b.stream.quality] : -1;
+    if (rankA !== rankB) return rankB - rankA;
+    return a.index - b.index;
+  }).slice(0, MAX_STREAMS_PER_PROVIDER).map((entry) => entry.stream);
+}
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
@@ -1550,7 +1566,7 @@ function toNuvioStream(internalStream) {
     name: internalStream.name,
     title: ["Latino", container, resolution].filter(Boolean).join(" \u2022 ") || " ",
     url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
-    quality: resolution || null,
+    quality: resolution || deriveServerLabel(internalStream) || null,
     size: null,
     provider: "lamovie"
   };
@@ -1615,7 +1631,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       ).then((probed) => {
         trail.push(`probe: ${probed.length} survived of ${rawNuvioStreams.length}`);
         if (probed.length === 0 && rawNuvioStreams.length > 0) unplayedNuvioStreams = rawNuvioStreams;
-        return probed;
+        return finalizeStreams(probed);
       });
     });
   }).then((streams) => {

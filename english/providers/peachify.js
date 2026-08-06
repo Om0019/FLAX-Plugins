@@ -80,10 +80,176 @@ var _0xbcc88b=_0x55df;function _0x3826(){var _0xb3031c=['sw52ywXPzcbdzxj0AwzPy2f
     return out;
   }
 
+  // These vendored scrapers hand back every link they find, including
+  // expired/geo-blocked embeds that never play. Latino's providers already
+  // probe each candidate before returning it (see latino/src/providers/*);
+  // English never did, so its cards looked more populated but were less
+  // reliable to actually press play on. Mirrors the same Range/HEAD-based
+  // playability probe here.
+  var __streamProbeRangeBytes = 2048;
+  var __streamProbeTimeoutMs = 5000;
+  var __streamProbeConcurrency = 4;
+  var __hasTimers = typeof setTimeout === "function";
+
+  function __fetchWithTimeout(url, options, timeoutMs) {
+    var request = fetch(url, options);
+    if (!__hasTimers) return request;
+    var timeoutId;
+    var timeout = new Promise(function (resolve, reject) {
+      timeoutId = setTimeout(function () {
+        reject(new Error("Fetch timeout after " + timeoutMs + "ms: " + url));
+      }, timeoutMs);
+    });
+    return Promise.race([request, timeout]).then(
+      function (res) {
+        clearTimeout(timeoutId);
+        return res;
+      },
+      function (err) {
+        clearTimeout(timeoutId);
+        throw err;
+      }
+    );
+  }
+
+  function __isHtmlProbeResponse(res, text) {
+    var contentType = ((res.headers && res.headers.get && res.headers.get("content-type")) || "").toLowerCase();
+    if (contentType.indexOf("text/html") !== -1) return true;
+    return /^\s*<(!doctype|html)/i.test(text || "");
+  }
+
+  function __hasPlaylistEntries(body) {
+    return body.indexOf("#EXT-X-STREAM-INF") !== -1 || body.indexOf("#EXTINF") !== -1;
+  }
+
+  function __firstPlaylistEntryUrl(body, manifestUrl) {
+    var lines = String(body || "").split(/\r?\n/);
+    for (var i = 0; i < lines.length; i += 1) {
+      var trimmed = lines[i].trim();
+      if (!trimmed || trimmed.indexOf("#") === 0) continue;
+      try {
+        return new URL(trimmed, manifestUrl).toString();
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // The raw CDN URLs these scrapers return are often hotlink-protected --
+  // the actual player only gets through because it sends the Referer/
+  // Origin/User-Agent the stream object carries in `headers`. Probing
+  // without them produced false negatives (a real, playable 2160p VidEasy
+  // stream 403'd on its segment host and was wrongly dropped) until this
+  // was caught by comparing a probed-to-zero run against the same title
+  // fetched with and without those headers. Every probe request below
+  // merges them in, the same way the real player would.
+  function __mergeProbeHeaders(extraHeaders, extra) {
+    var headers = { Range: "bytes=0-" + (__streamProbeRangeBytes - 1) };
+    if (extraHeaders) {
+      for (var key in extraHeaders) {
+        if (Object.prototype.hasOwnProperty.call(extraHeaders, key)) headers[key] = extraHeaders[key];
+      }
+    }
+    if (extra) {
+      for (var key2 in extra) {
+        if (Object.prototype.hasOwnProperty.call(extra, key2)) headers[key2] = extra[key2];
+      }
+    }
+    return headers;
+  }
+
+  function __probeHlsPlayback(body, manifestUrl, depth, extraHeaders) {
+    var resourceUrl = __firstPlaylistEntryUrl(body, manifestUrl);
+    if (!resourceUrl) return Promise.resolve(false);
+    if (depth >= 1) {
+      return __fetchWithTimeout(resourceUrl, { method: "HEAD", headers: extraHeaders || {} }, __streamProbeTimeoutMs)
+        .then(function (res) { return [401, 403, 404, 410, 451].indexOf(res.status) === -1; })
+        .catch(function () { return true; });
+    }
+    return __fetchWithTimeout(resourceUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
+      .then(function (res) {
+        return res.text().then(function (text) {
+          if (!res.ok && res.status !== 206) return false;
+          if (__isHtmlProbeResponse(res, text)) return false;
+          if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, resourceUrl, depth + 1, extraHeaders);
+          return text.length > 0;
+        });
+      })
+      .catch(function () { return false; });
+  }
+
+  function __probeStreamPlayable(streamUrl, extraHeaders) {
+    return __fetchWithTimeout(streamUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
+      .then(function (res) {
+        return res.text().then(function (text) {
+          if ([401, 403, 404, 410, 451].indexOf(res.status) !== -1) return false;
+          if (!res.ok && res.status !== 206) return false;
+          if (__isHtmlProbeResponse(res, text)) return false;
+          if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, streamUrl, 0, extraHeaders);
+          return text.length > 0;
+        });
+      })
+      .catch(function () { return false; });
+  }
+
+  function __mapWithConcurrency(items, concurrency, worker) {
+    return new Promise(function (resolve) {
+      if (items.length === 0) {
+        resolve([]);
+        return;
+      }
+      var results = [];
+      var cursor = 0;
+      var doneCount = 0;
+      function runNext() {
+        while (cursor < items.length) {
+          var index = cursor;
+          cursor += 1;
+          Promise.resolve()
+            .then(function () { return worker(items[index], index); })
+            .catch(function () { return null; })
+            .then(function (result) {
+              if (result) results.push(result);
+              doneCount += 1;
+              if (doneCount === items.length) resolve(results);
+              else runNext();
+            });
+          return;
+        }
+      }
+      var runners = Math.max(1, Math.min(concurrency, items.length));
+      for (var i = 0; i < runners; i += 1) runNext();
+    });
+  }
+
+  // Caps this provider's own contribution to the merged stream list -- with
+  // eight English providers each returning everything they find, the
+  // combined list Nuvio shows can otherwise run into the dozens for one
+  // title. Known resolutions sort first (higher first), everything else
+  // keeps the order probing produced it in.
+  var __maxStreamsPerProvider = 2;
+  var __streamResolutionRankMap = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
+  function __finalizeStreams(streams) {
+    return streams
+      .map(function (stream, index) { return { stream: stream, index: index }; })
+      .sort(function (a, b) {
+        var rankA = Object.prototype.hasOwnProperty.call(__streamResolutionRankMap, a.stream.quality) ? __streamResolutionRankMap[a.stream.quality] : -1;
+        var rankB = Object.prototype.hasOwnProperty.call(__streamResolutionRankMap, b.stream.quality) ? __streamResolutionRankMap[b.stream.quality] : -1;
+        if (rankA !== rankB) return rankB - rankA;
+        return a.index - b.index;
+      })
+      .slice(0, __maxStreamsPerProvider)
+      .map(function (entry) { return entry.stream; });
+  }
+
   function __wrapGetStreams(original) {
     return function (tmdbId, mediaType, seasonNum, episodeNum) {
       return Promise.resolve(original(tmdbId, mediaType, seasonNum, episodeNum)).then(function (streams) {
-        return (streams || []).map(__applyStreamTemplate);
+        var templated = (streams || []).map(__applyStreamTemplate);
+        return __mapWithConcurrency(templated, __streamProbeConcurrency, function (stream) {
+          return __probeStreamPlayable(stream.url, stream.headers).then(function (playable) { return playable ? stream : null; });
+        }).then(__finalizeStreams);
       });
     };
   }
