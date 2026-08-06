@@ -1,7 +1,3 @@
-// Built from src/providers/sololatino.js for the restricted runtime Nuvio's local-scraper
-// sandbox provides -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/sololatino.js > providers/sololatino.js
-// Edit src/providers/sololatino.js instead, then rebuild.
 var __defProp = Object.defineProperty;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
@@ -582,6 +578,14 @@ function raceTitleSearches(titles, search) {
 }
 function cleanText(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+}
+function looseIncludes(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+  return shorter.length / longer.length >= 0.5;
 }
 function extractCandidateYears(...values) {
   const years = /* @__PURE__ */ new Set();
@@ -1351,11 +1355,11 @@ function scoreCandidate(result, targetTitle, originalTargetTitle, year, extraTit
   if (cleanOriginalTitle && cleanResultTitle === cleanOriginalTitle) score += 4;
   if (cleanSlug && cleanSlug === cleanTargetTitle) score += 5;
   if (cleanSlug && cleanSlug === cleanOriginalTitle) score += 4;
-  if (cleanTargetTitle && (cleanResultTitle.includes(cleanTargetTitle) || cleanTargetTitle.includes(cleanResultTitle))) score += 2;
-  if (cleanOriginalTitle && (cleanResultTitle.includes(cleanOriginalTitle) || cleanOriginalTitle.includes(cleanResultTitle))) score += 2;
+  if (cleanTargetTitle && looseIncludes(cleanResultTitle, cleanTargetTitle)) score += 2;
+  if (cleanOriginalTitle && looseIncludes(cleanResultTitle, cleanOriginalTitle)) score += 2;
   for (const cleanExtra of cleanExtraTitles) {
     if (cleanResultTitle === cleanExtra || cleanSlug === cleanExtra) score += 4;
-    else if (cleanResultTitle.includes(cleanExtra) || cleanExtra.includes(cleanResultTitle)) score += 2;
+    else if (looseIncludes(cleanResultTitle, cleanExtra)) score += 2;
   }
   if (year) {
     const yearStr = year.toString();
@@ -1691,12 +1695,10 @@ function toNuvioStream(internalStream, mediaTitle) {
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
-  return fetchTmdbDetails(tmdbId, mediaType).then((details) => {
+  return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     if (!details || !details.title) return [];
-    return getAlternativeTitles(mediaType, tmdbId).then(
-      (extraTitles) => scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
-        (results) => (results || []).map((stream) => toNuvioStream(stream, details.title))
-      )
+    return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
+      (results) => (results || []).map((stream) => toNuvioStream(stream, details.title))
     );
   }).catch((error) => {
     console.error("SoloLatino (Nuvio): getStreams failed:", error && error.message);

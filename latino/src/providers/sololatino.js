@@ -680,6 +680,24 @@ function cleanText(value) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * A short target title (e.g. "El Origen") can be a coincidental substring of
+ * a long, unrelated candidate title (e.g. "Pesadilla en Elm Street: El
+ * Origen") once whitespace is stripped by cleanText -- that false positive
+ * scored the same as a real match and won ties against the correct result.
+ * Requiring the shorter string to cover a reasonable share of the longer one
+ * keeps genuine (if imperfectly-formatted) matches while rejecting titles
+ * that only happen to contain the target somewhere in the middle.
+ */
+function looseIncludes(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+  return shorter.length / longer.length >= 0.5;
+}
+
 function extractCandidateYears(...values) {
   const years = new Set();
   for (const value of values) {
@@ -1671,12 +1689,12 @@ function scoreCandidate(result, targetTitle, originalTargetTitle, year, extraTit
   if (cleanSlug && cleanSlug === cleanTargetTitle) score += 5;
   if (cleanSlug && cleanSlug === cleanOriginalTitle) score += 4;
 
-  if (cleanTargetTitle && (cleanResultTitle.includes(cleanTargetTitle) || cleanTargetTitle.includes(cleanResultTitle))) score += 2;
-  if (cleanOriginalTitle && (cleanResultTitle.includes(cleanOriginalTitle) || cleanOriginalTitle.includes(cleanResultTitle))) score += 2;
+  if (cleanTargetTitle && looseIncludes(cleanResultTitle, cleanTargetTitle)) score += 2;
+  if (cleanOriginalTitle && looseIncludes(cleanResultTitle, cleanOriginalTitle)) score += 2;
 
   for (const cleanExtra of cleanExtraTitles) {
     if (cleanResultTitle === cleanExtra || cleanSlug === cleanExtra) score += 4;
-    else if (cleanResultTitle.includes(cleanExtra) || cleanExtra.includes(cleanResultTitle)) score += 2;
+    else if (looseIncludes(cleanResultTitle, cleanExtra)) score += 2;
   }
 
   if (year) {
@@ -2092,14 +2110,15 @@ function toNuvioStream(internalStream, mediaTitle) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === 'tv' ? 'series' : 'movie';
 
-  return fetchTmdbDetails(tmdbId, mediaType)
-    .then((details) => {
+  // TMDB details and its translations are independent lookups; fetching
+  // them serially cost a full extra round trip before the scrape could even
+  // start.
+  return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
+    .then(([details, extraTitles]) => {
       if (!details || !details.title) return [];
 
-      return getAlternativeTitles(mediaType, tmdbId).then((extraTitles) =>
-        scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
-          (results || []).map((stream) => toNuvioStream(stream, details.title))
-        )
+      return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
+        (results || []).map((stream) => toNuvioStream(stream, details.title))
       );
     })
     .catch((error) => {

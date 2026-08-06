@@ -424,6 +424,22 @@ function cleanText(value) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * A short target title can be a coincidental substring of a long, unrelated
+ * candidate title once whitespace is stripped by cleanText. Requiring the
+ * shorter string to cover a reasonable share of the longer one keeps
+ * genuine (if imperfectly-formatted) matches while rejecting titles that
+ * only happen to contain the target somewhere in the middle.
+ */
+function looseIncludes(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+  return shorter.length / longer.length >= 0.5;
+}
+
 function extractCandidateYears(...values) {
   const years = new Set();
   for (const value of values) {
@@ -1340,12 +1356,12 @@ function scoreEpisodeCandidate(result, query, originalTitle, extraTitles = [], s
   if (cleanOriginal && cleanResultTitle === cleanOriginal) score += 6;
   if (cleanOriginal && cleanSlugTitle === cleanOriginal) score += 6;
 
-  if (cleanQuery && (cleanResultTitle.includes(cleanQuery) || cleanSlugTitle.includes(cleanQuery))) score += 3;
-  if (cleanOriginal && (cleanResultTitle.includes(cleanOriginal) || cleanSlugTitle.includes(cleanOriginal))) score += 2;
+  if (cleanQuery && (looseIncludes(cleanResultTitle, cleanQuery) || looseIncludes(cleanSlugTitle, cleanQuery))) score += 3;
+  if (cleanOriginal && (looseIncludes(cleanResultTitle, cleanOriginal) || looseIncludes(cleanSlugTitle, cleanOriginal))) score += 2;
 
   for (const cleanExtra of cleanExtras) {
     if (cleanResultTitle === cleanExtra || cleanSlugTitle === cleanExtra) score += 5;
-    else if (cleanResultTitle.includes(cleanExtra) || cleanSlugTitle.includes(cleanExtra)) score += 2;
+    else if (looseIncludes(cleanResultTitle, cleanExtra) || looseIncludes(cleanSlugTitle, cleanExtra)) score += 2;
   }
 
   return score;
@@ -1726,14 +1742,15 @@ function toNuvioStream(internalStream, mediaTitle) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   if (mediaType !== 'tv') return Promise.resolve([]);
 
-  return fetchTmdbDetails(tmdbId, mediaType)
-    .then((details) => {
+  // TMDB details and its translations are independent lookups; fetching
+  // them serially cost a full extra round trip before the scrape could even
+  // start.
+  return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
+    .then(([details, extraTitles]) => {
       if (!details || !details.title) return [];
 
-      return getAlternativeTitles(mediaType, tmdbId).then((extraTitles) =>
-        scrape(details.title, details.originalTitle, details.year, 'series', seasonNum, episodeNum, { extraTitles }).then((results) =>
-          (results || []).map((stream) => toNuvioStream(stream, details.title))
-        )
+      return scrape(details.title, details.originalTitle, details.year, 'series', seasonNum, episodeNum, { extraTitles }).then((results) =>
+        (results || []).map((stream) => toNuvioStream(stream, details.title))
       );
     })
     .catch((error) => {
