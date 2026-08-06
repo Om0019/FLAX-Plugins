@@ -1,5 +1,5 @@
-// Built from src/providers/cinecalidad.js for the Hermes/es2016 runtime Nuvio's local-scraper
-// sandbox targets -- do not hand-edit. Regenerate with:
+// Built from src/providers/cinecalidad.js for the restricted runtime Nuvio's local-scraper
+// sandbox provides -- do not hand-edit. Regenerate with:
 //   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/cinecalidad.js > latino/providers/cinecalidad.js
 // Edit src/providers/cinecalidad.js instead, then rebuild.
 var __defProp = Object.defineProperty;
@@ -120,13 +120,22 @@ function normalizeUrl(value, baseUrl) {
     return null;
   }
 }
+const HAS_TIMERS = typeof setTimeout === "function";
+function safeSetTimeout(fn, ms) {
+  return HAS_TIMERS ? setTimeout(fn, ms) : null;
+}
+function safeClearTimeout(id) {
+  if (HAS_TIMERS && id !== null && id !== void 0) clearTimeout(id);
+}
 function fetchWithDeadline(url, options, timeoutMs, consume) {
   const externalSignal = options.signal;
   const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
-  let timeoutId;
-  let onExternalAbort;
+  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
+  if (!HAS_TIMERS && !externalSignal) return request;
+  let timeoutId = null;
+  let onExternalAbort = null;
   const deadline = new Promise((_resolve, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = safeSetTimeout(() => {
       reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
     if (externalSignal) {
@@ -139,12 +148,11 @@ function fetchWithDeadline(url, options, timeoutMs, consume) {
     }
   });
   function cleanup() {
-    clearTimeout(timeoutId);
+    safeClearTimeout(timeoutId);
     if (externalSignal && onExternalAbort) {
       externalSignal.removeEventListener("abort", onExternalAbort);
     }
   }
-  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
   return Promise.race([request, deadline]).then(
     (result) => {
       cleanup();
@@ -1066,11 +1074,11 @@ function waitForPlayerResolvers(playerPromises, streams) {
       settled = true;
       resolve(reason);
     }
-    setTimeout(() => {
+    safeSetTimeout(() => {
       fastReturnEnabled = true;
       if (streams.length >= PLAYER_FAST_MIN_STREAMS) finish("enough-streams");
     }, PLAYER_FAST_MIN_WAIT_MS);
-    setTimeout(() => finish("timeout"), PLAYER_COLLECTION_TIMEOUT_MS);
+    safeSetTimeout(() => finish("timeout"), PLAYER_COLLECTION_TIMEOUT_MS);
     Promise.allSettled(
       playerPromises.map(
         (promise) => promise.finally(() => {

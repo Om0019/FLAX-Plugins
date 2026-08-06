@@ -68,15 +68,21 @@ function authHeader() {
 // http helpers (fetch + timeout, no Node `http` module)
 // ---------------------------------------------------------------------------
 
-// Timeouts are raced, NOT driven by AbortController. Nuvio runs on React
-// Native, whose fetch does not honour an AbortSignal the way Node's does --
-// passing `signal` makes the request fail outright, and since getStreams
-// swallows errors into an empty array, every AbortController-based provider
-// silently returned zero streams on-device while working fine under Node.
-// (Exactly the providers that avoid AbortController are the ones that were
-// observed working in the app.) A raced timeout can't cancel the underlying
-// request, which is an acceptable trade for one that actually completes.
+// Nuvio's sandbox provides NO timer functions -- a bare `setTimeout` call
+// there throws "'setTimeout' is not defined" (confirmed on-device) -- and its
+// fetch does not honour an AbortSignal the way Node's does. Since getStreams
+// swallows errors into an empty array, reaching for either one failed
+// silently and this provider returned zero streams every time. So: no
+// AbortController, and the deadline is skipped entirely when there are no
+// timers to arm it with. Plain Node, used for local testing, has timers and
+// keeps the original timeout behaviour. A raced timeout can't cancel the
+// underlying request either way, which is an acceptable trade for one that
+// actually completes.
+const HAS_TIMERS = typeof setTimeout === 'function';
+
 function fetchWithTimeout(url, options, timeoutMs) {
+  if (!HAS_TIMERS) return fetch(url, options);
+
   let timeoutId;
   const timeout = new Promise((_resolve, reject) => {
     timeoutId = setTimeout(() => {

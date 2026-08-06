@@ -1,6 +1,6 @@
 {
   "name": "English Nuvio Providers",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "scrapers": [
     {
       "id": "Diag",
@@ -122,8 +122,8 @@
     {
       "id": "AIOStreams",
       "name": "AIOStreams",
-      "description": "Debrid-backed torrent streams from a configured AIOStreams instance, resolved from tmdbId via a TMDB external_ids lookup (AIOStreams itself is keyed on IMDb id). Replaces Torrentio, which this used to run. Authenticates with a UUID/password baked into providers/aiostreams.js. Retries once on a transient failure or empty result. Timeouts are raced rather than driven by AbortController: React Native's fetch does not honour an AbortSignal the way Node's does, so passing `signal` made every request fail and getStreams swallowed it into an empty result.",
-      "version": "1.0.4",
+      "description": "Debrid-backed torrent streams from a configured AIOStreams instance, resolved from tmdbId via a TMDB external_ids lookup (AIOStreams itself is keyed on IMDb id). Replaces Torrentio, which this used to run. Authenticates with a UUID/password baked into providers/aiostreams.js. Retries once on a transient failure or empty result. Uses no timers and no AbortController: Nuvio's sandbox defines neither setTimeout nor a fetch that honours an AbortSignal, and getStreams swallowed the resulting throw into an empty result. Request deadlines are skipped where timers are unavailable.",
+      "version": "1.0.5",
       "author": "Ported from the English Stremio addon's aiostreams.js",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/aiostreams.js",

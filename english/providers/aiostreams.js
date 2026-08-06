@@ -1,5 +1,5 @@
-// Built from src/providers/aiostreams.js for the Hermes/es2016 runtime Nuvio's local-scraper
-// sandbox targets -- do not hand-edit. Regenerate with:
+// Built from src/providers/aiostreams.js for the restricted runtime Nuvio's local-scraper
+// sandbox provides -- do not hand-edit. Regenerate with:
 //   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > english/providers/aiostreams.js
 // Edit src/providers/aiostreams.js instead, then rebuild.
 const AIOSTREAMS_BASE_URL = "https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search";
@@ -28,7 +28,9 @@ function stringToBase64(str) {
 function authHeader() {
   return `Basic ${stringToBase64(`${AIOSTREAMS_UUID}:${AIOSTREAMS_PASSWORD}`)}`;
 }
+const HAS_TIMERS = typeof setTimeout === "function";
 function fetchWithTimeout(url, options, timeoutMs) {
+  if (!HAS_TIMERS) return fetch(url, options);
   let timeoutId;
   const timeout = new Promise((_resolve, reject) => {
     timeoutId = setTimeout(() => {

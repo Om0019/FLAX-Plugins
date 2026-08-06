@@ -1,5 +1,5 @@
-// Built from src/providers/cinehdplus.js for the Hermes/es2016 runtime Nuvio's local-scraper
-// sandbox targets -- do not hand-edit. Regenerate with:
+// Built from src/providers/cinehdplus.js for the restricted runtime Nuvio's local-scraper
+// sandbox provides -- do not hand-edit. Regenerate with:
 //   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/cinehdplus.js > latino/providers/cinehdplus.js
 // Edit src/providers/cinehdplus.js instead, then rebuild.
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
@@ -18,13 +18,21 @@ var __objRest = (source, exclude) => {
   return target;
 };
 const DEFAULT_TIMEOUT_MS = 3e3;
+const HAS_TIMERS = typeof setTimeout === "function";
+function safeSetTimeout(fn, ms) {
+  return HAS_TIMERS ? setTimeout(fn, ms) : null;
+}
+function safeClearTimeout(id) {
+  if (HAS_TIMERS && id !== null && id !== void 0) clearTimeout(id);
+}
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const externalSignal = options.signal;
   const _a = options, { signal } = _a, fetchOptions = __objRest(_a, ["signal"]);
-  let timeoutId;
-  let onExternalAbort;
+  if (!HAS_TIMERS && !externalSignal) return fetch(url, fetchOptions);
+  let timeoutId = null;
+  let onExternalAbort = null;
   const deadline = new Promise((_resolve, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = safeSetTimeout(() => {
       reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
     if (externalSignal) {
@@ -37,7 +45,7 @@ function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
     }
   });
   function cleanup() {
-    clearTimeout(timeoutId);
+    safeClearTimeout(timeoutId);
     if (externalSignal && onExternalAbort) {
       externalSignal.removeEventListener("abort", onExternalAbort);
     }
