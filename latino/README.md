@@ -50,6 +50,22 @@ Next step to make this fully functional: a pure-JS AES-CBC decrypt + SHA-256
 implementation (no external deps allowed in the sandbox) to un-stub
 `decryptEmbed69`/`resolvePelisplus` in `providers/sololatino.js`.
 
+## Build step
+
+`src/providers/*.js` are the hand-authored, readable sources. Nuvio's sandbox
+runs on Hermes targeting ES2016, which does not understand object spread
+(`{...x}`, ES2018) or optional chaining/nullish coalescing (`?.`/`??`,
+ES2020) -- both used throughout these files -- so the versions actually
+loaded by Nuvio live in `providers/*.js`, built from `src/providers/*.js`
+with:
+
+```
+npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/<name>.js > providers/<name>.js
+```
+
+Edit `src/providers/<name>.js`, then rebuild before committing -- never
+hand-edit `providers/<name>.js` directly, it will be overwritten.
+
 ## Porting the other scrapers
 
 Only `sololatino.js` has been ported so far, as a proof of concept. The repo

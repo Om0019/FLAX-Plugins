@@ -63,6 +63,16 @@ loads scrapers from a raw file URL, treat this repository as sensitive if
 those credentials should stay private — anyone who can fetch
 `providers/aiostreams.js`'s raw contents can read them.
 
+`src/providers/aiostreams.js` is the hand-authored, readable source;
+`providers/aiostreams.js` is a built artifact -- Nuvio's sandbox runs on
+Hermes targeting ES2016, which doesn't understand the object spread
+(`{...x}`, ES2018) the source file uses, unlike the already-restricted-target
+vendored providers above. Rebuild after editing the source with:
+
+```
+npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > providers/aiostreams.js
+```
+
 Torrentio itself (the old `torrentio.js` vendored file) is not included:
 even before AIOStreams replaced it, it wasn't run via its own `getStreams` —
 the source addon fetched `torrentio.strem.fun` directly using a debrid
