@@ -22,15 +22,50 @@ const _0x2c2e6d=_0xf68e;(function(_0x4ca543,_0xddd23){const _0x5bb1b7=_0xf68e,_0
   }
 
   function __extractStreamResolution(stream) {
-    if (stream.quality && stream.quality !== "Unknown") return String(stream.quality).toLowerCase();
-    var text = (stream.title || "") + " " + (stream.name || "");
+    // Always regex-extracts just the resolution token instead of trusting
+    // stream.quality verbatim when present -- some scrapers here set
+    // quality to a whole descriptive string ("4k | BluRay | x265/HEVC"),
+    // which used to pass straight through onto the card unfiltered.
+    var text = (stream.quality || "") + " " + (stream.title || "") + " " + (stream.name || "");
     var match = text.match(__streamResolutionPattern);
     if (!match) return null;
     return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
   }
 
+  function __formatByteSize(bytes) {
+    var n = Number(bytes);
+    if (!isFinite(n) || n <= 0) return null;
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var value = n;
+    var unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return (Math.round(value * 10) / 10) + " " + units[unitIndex];
+  }
+
+  // Some vendored scrapers here (VidEasy) put a whole multi-line
+  // description into `size` instead of an actual file size. Only a short
+  // "123 MB" / "1.5 GB" shaped string (or a raw byte number, handled above)
+  // is trusted; anything else is dropped rather than shown verbatim.
+  var __sizeStringPattern = /^\s*\d+(\.\d+)?\s*(B|KB|MB|GB|TB)\s*$/i;
+  function __sanitizeSizeString(value) {
+    if (typeof value !== "string") return null;
+    return __sizeStringPattern.test(value) ? value.trim() : null;
+  }
+
+  // Nuvio's stream card renders `quality`/`size` directly, not `title` --
+  // every provider here was setting `quality` to whatever raw, differently-
+  // shaped string its own vendored scraper produced (a bare "1080p", or
+  // "1080p | BluRay | x264/AVC", or an unformatted byte count in `size`),
+  // which is why every provider's cards looked different from every other
+  // provider's. `quality` now always becomes just the clean resolution
+  // token already extracted above (or null), and `name` always becomes
+  // just this provider's own display name instead of whatever descriptive
+  // per-stream text the scraper happened to put there, so every provider
+  // renders the same way: a fixed bold name, a clean quality • size line.
   function __applyStreamTemplate(stream) {
-    var indexer = stream.name || __NUVIO_PROVIDER_NAME__;
     var container = __extractStreamContainer(stream.url);
     var resolution = __extractStreamResolution(stream);
     var cached = stream.__cached === true || stream.cached === true;
@@ -38,7 +73,9 @@ const _0x2c2e6d=_0xf68e;(function(_0x4ca543,_0xddd23){const _0x5bb1b7=_0xf68e,_0
 
     var out = {};
     for (var key in stream) if (Object.prototype.hasOwnProperty.call(stream, key)) out[key] = stream[key];
-    out.name = cached ? ("\u26a1\ufe0f " + indexer) : indexer;
+    out.name = (cached ? "\u26a1\ufe0f " : "") + __NUVIO_PROVIDER_NAME__;
+    out.quality = resolution || null;
+    out.size = typeof stream.size === "number" ? __formatByteSize(stream.size) : __sanitizeSizeString(stream.size);
     out.title = parts.length > 0 ? parts.join(" \u2022 ") : " ";
     return out;
   }

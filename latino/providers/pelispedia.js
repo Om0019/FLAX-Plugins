@@ -1481,8 +1481,7 @@ function extractStreamContainer(url) {
   return match ? match[1].toLowerCase() : null;
 }
 function extractStreamResolution(quality, title, name) {
-  if (quality && quality !== "Unknown") return String(quality).toLowerCase();
-  const text = `${title || ""} ${name || ""}`;
+  const text = `${quality || ""} ${title || ""} ${name || ""}`;
   const match = text.match(STREAM_RESOLUTION_PATTERN);
   if (!match) return null;
   return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();

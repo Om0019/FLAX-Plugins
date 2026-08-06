@@ -1606,8 +1606,11 @@ function extractStreamContainer(url) {
 }
 
 function extractStreamResolution(quality, title, name) {
-  if (quality && quality !== 'Unknown') return String(quality).toLowerCase();
-  const text = `${title || ''} ${name || ''}`;
+  // Always regex-extracts just the resolution token instead of trusting
+  // quality verbatim when present, matching the same fix applied to the
+  // English providers -- keeps this consistent even though Latino streams
+  // rarely set quality upfront today.
+  const text = `${quality || ''} ${title || ''} ${name || ''}`;
   const match = text.match(STREAM_RESOLUTION_PATTERN);
   if (!match) return null;
   return match[1].toLowerCase() === '4k' ? '2160p' : match[1].toLowerCase();
