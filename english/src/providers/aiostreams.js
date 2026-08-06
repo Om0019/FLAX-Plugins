@@ -25,10 +25,15 @@ const AIOSTREAMS_BASE_URL = 'https://aiostreamsfortheweebsstable.midnightignite.
 const AIOSTREAMS_UUID = '4b990cd7-9058-41f6-a099-224272656e63';
 const AIOSTREAMS_PASSWORD = 'Jason001$';
 
-const AIOSTREAMS_TIMEOUT_MS = 8000;
+// AIOStreams' /search endpoint aggregates results from multiple indexers
+// server-side, which can take a while even on a request that's about to
+// succeed; 8s was cutting off legitimate slow-but-working responses on
+// real-world (non-cloud-datacenter) networks, so this is well over what a
+// diagnostic run against the live instance actually measured.
+const AIOSTREAMS_TIMEOUT_MS = 25000;
 const TMDB_API_KEY = 'af3fa2d2239e9d0e6c04a1076d3df76f';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
-const TMDB_TIMEOUT_MS = 5000;
+const TMDB_TIMEOUT_MS = 10000;
 
 // ---------------------------------------------------------------------------
 // base64 (replacement for Node's Buffer, which isn't available here)

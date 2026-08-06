@@ -1,7 +1,5 @@
-// Built from src/providers/aiostreams.js for the Hermes/es2016 runtime Nuvio's local-scraper
-// sandbox targets -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > english/providers/aiostreams.js
-// Edit src/providers/aiostreams.js instead, then rebuild.
+// Built from src/providers/aiostreams.js -- do not hand-edit. Regenerate with:
+//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/aiostreams.js > providers/aiostreams.js
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
 var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
@@ -24,10 +22,10 @@ var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 const AIOSTREAMS_BASE_URL = "https://aiostreamsfortheweebsstable.midnightignite.me/api/v1/search";
 const AIOSTREAMS_UUID = "4b990cd7-9058-41f6-a099-224272656e63";
 const AIOSTREAMS_PASSWORD = "Jason001$";
-const AIOSTREAMS_TIMEOUT_MS = 8e3;
+const AIOSTREAMS_TIMEOUT_MS = 25e3;
 const TMDB_API_KEY = "af3fa2d2239e9d0e6c04a1076d3df76f";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
-const TMDB_TIMEOUT_MS = 5e3;
+const TMDB_TIMEOUT_MS = 1e4;
 const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 function stringToBase64(str) {
   const bytes = [];

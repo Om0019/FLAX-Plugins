@@ -1,6 +1,6 @@
 {
   "name": "English Nuvio Providers",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "scrapers": [
     {
       "id": "Diag",
@@ -122,8 +122,8 @@
     {
       "id": "AIOStreams",
       "name": "AIOStreams",
-      "description": "Debrid-backed torrent streams from a configured AIOStreams instance, resolved from tmdbId via a TMDB external_ids lookup (AIOStreams itself is keyed on IMDb id). Replaces Torrentio, which this used to run. Authenticates with a UUID/password baked into providers/aiostreams.js. Retries once on a transient failure or empty result, since the instance is observed to occasionally fail a single request that immediately succeeds on retry.",
-      "version": "1.0.2",
+      "description": "Debrid-backed torrent streams from a configured AIOStreams instance, resolved from tmdbId via a TMDB external_ids lookup (AIOStreams itself is keyed on IMDb id). Replaces Torrentio, which this used to run. Authenticates with a UUID/password baked into providers/aiostreams.js. Retries once on a transient failure or empty result. AIOStreams request timeout raised to 25s (from 8s) -- its /search endpoint aggregates multiple indexers server-side and was being aborted on slower networks before a legitimate, working response arrived.",
+      "version": "1.0.3",
       "author": "Ported from the English Stremio addon's aiostreams.js",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/aiostreams.js",
