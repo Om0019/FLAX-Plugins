@@ -1,6 +1,6 @@
 {
   "name": "English Nuvio Providers",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "scrapers": [
     {
       "id": "Diag",
