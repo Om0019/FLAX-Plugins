@@ -1532,16 +1532,11 @@ function toNuvioStream(internalStream) {
   };
   return nuvioStream;
 }
-function wrapDiagText(text, width) {
-  const clean = String(text).replace(/\s+/g, " ").trim().slice(0, 600);
-  const lines = [];
-  for (let i = 0; i < clean.length; i += width) lines.push(clean.slice(i, i + width));
-  return lines.join("\n");
-}
 function diagStream(text) {
+  const summary = String(text).replace(/\s+/g, " ").trim().slice(0, 200);
   return {
-    name: "\u26A0\uFE0F LaMovie diag",
-    title: wrapDiagText(text, 30),
+    name: `\u26A0\uFE0F ${summary}`,
+    title: "LaMovie diag",
     url: "https://example.com/diag-not-playable.mp4",
     quality: null,
     size: null,
