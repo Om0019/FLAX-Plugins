@@ -1,7 +1,3 @@
-// Built from src/providers/cinehdplus.js for the restricted runtime Nuvio's local-scraper
-// sandbox provides -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/cinehdplus.js > latino/providers/cinehdplus.js
-// Edit src/providers/cinehdplus.js instead, then rebuild.
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __propIsEnum = Object.prototype.propertyIsEnumerable;

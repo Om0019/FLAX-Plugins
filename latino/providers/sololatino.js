@@ -1683,7 +1683,7 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
   });
 }
 function toNuvioStream(internalStream, mediaTitle) {
-  return {
+  const nuvioStream = {
     name: internalStream.name,
     title: mediaTitle ? `${internalStream.title} - ${mediaTitle}` : internalStream.title,
     url: internalStream.url,
@@ -1692,6 +1692,14 @@ function toNuvioStream(internalStream, mediaTitle) {
     headers: internalStream.headers,
     provider: "sololatino"
   };
+  if (internalStream.headers) {
+    nuvioStream.behaviorHints = {
+      proxyHeaders: {
+        request: internalStream.headers
+      }
+    };
+  }
+  return nuvioStream;
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
