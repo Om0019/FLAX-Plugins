@@ -1988,8 +1988,36 @@ function rawSearchProbe(query) {
   return fetchTextWithTimeout(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', Accept: 'application/json' }
   }, LAMOVIE_SEARCH_TIMEOUT_MS)
-    .then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, ' ')}"`)
-    .catch((error) => `rawProbe: FETCH ERROR ${error && error.message}`);
+    .then(({ res, text }) => ({
+      summary: `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, ' ')}"`,
+      status: res.status,
+      bodyLength: text.length,
+      bodySnippet: text.slice(0, 4000)
+    }))
+    .catch((error) => ({
+      summary: `rawProbe: FETCH ERROR ${error && error.message}`,
+      status: null,
+      bodyLength: 0,
+      bodySnippet: null
+    }));
+}
+
+// Best-effort, fire-and-forget: POSTs the full (untruncated) diagnostic
+// payload to a webhook instead of relying solely on Nuvio's stream-name
+// field, which is both length-limited and only visible one screenshot at a
+// time. Never allowed to affect the real getStreams() result -- always
+// swallows its own errors.
+const DIAG_WEBHOOK_URL = 'https://webhook.site/ad43f557-7f98-45f9-b35b-34e0b631ca5a';
+function reportDiag(payload) {
+  try {
+    fetch(DIAG_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(() => {});
+  } catch (e) {
+    // ignore
+  }
 }
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -2018,15 +2046,20 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     })
     .then((streams) => {
       if (streams && streams.length > 0) return streams;
-      if (!lastTitle) return [diagStream(trail.join(' | '))];
-      return rawSearchProbe(lastTitle).then((probeText) => {
-        trail.push(probeText);
+      if (!lastTitle) {
+        reportDiag({ provider: 'LaMovie', tmdbId, mediaType, trail });
+        return [diagStream(trail.join(' | '))];
+      }
+      return rawSearchProbe(lastTitle).then(({ summary, status, bodyLength, bodySnippet }) => {
+        trail.push(summary);
+        reportDiag({ provider: 'LaMovie', tmdbId, mediaType, trail, rawProbeStatus: status, rawProbeBodyLength: bodyLength, rawProbeBody: bodySnippet });
         return [diagStream(trail.join(' | '))];
       });
     })
     .catch((error) => {
       console.error('LaMovie (Nuvio): getStreams failed:', error && error.message);
       trail.push(`THREW: ${error && error.message}`);
+      reportDiag({ provider: 'LaMovie', tmdbId, mediaType, trail, threw: error && error.message });
       return [diagStream(trail.join(' | '))];
     });
 }
