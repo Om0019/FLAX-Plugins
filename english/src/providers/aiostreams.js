@@ -116,10 +116,6 @@ function fetchJsonWithTimeout(url, options, timeoutMs) {
     });
 }
 
-function fetchTextWithTimeout(url, options, timeoutMs) {
-  return fetchWithTimeout(url, options, timeoutMs).then((res) => res.text().then((text) => ({ res, text })));
-}
-
 // ---------------------------------------------------------------------------
 // Playability probe -- AIOStreams hands back everything a configured indexer
 // found, including uncached/stale debrid links that time out or 404 when
@@ -156,6 +152,23 @@ function firstPlaylistEntryUrl(body, manifestUrl) {
   return null;
 }
 
+// Some CDNs ignore the Range header entirely and respond 200 with the
+// *whole* file instead of 206 with just the requested slice. Reading such a
+// response as text means buffering an entire multi-hundred-MB/GB video into
+// a JS string -- which is what was actually causing titles to spin forever,
+// not a network hang: a probe silently trying to download the whole movie
+// before it could decide whether the movie was playable. Only read the body
+// when it's actually bounded: a real 206 (the Range was honoured, so the
+// body is just the requested slice) or a Content-Length small enough to be
+// a manifest/error page rather than a video file.
+const STREAM_PROBE_MAX_BODY_BYTES = 2 * 1024 * 1024;
+function shouldReadProbeBody(res) {
+  if (res.status === 206) return true;
+  const lengthHeader = res.headers && res.headers.get && res.headers.get('content-length');
+  const length = lengthHeader ? parseInt(lengthHeader, 10) : NaN;
+  return !Number.isNaN(length) && length <= STREAM_PROBE_MAX_BODY_BYTES;
+}
+
 function probeHlsPlayback(body, manifestUrl, depth) {
   const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
   if (!resourceUrl) return Promise.resolve(false);
@@ -164,25 +177,31 @@ function probeHlsPlayback(body, manifestUrl, depth) {
       .then((res) => ![401, 403, 404, 410, 451].includes(res.status))
       .catch(() => true);
   }
-  return fetchTextWithTimeout(resourceUrl, {
+  return fetchWithTimeout(resourceUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
-  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+  }, STREAM_PROBE_TIMEOUT_MS).then((res) => {
     if (!res.ok && res.status !== 206) return false;
-    if (isHtmlProbeResponse(res, text)) return false;
-    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
-    return text.length > 0;
+    if (!shouldReadProbeBody(res)) return true;
+    return res.text().then((text) => {
+      if (isHtmlProbeResponse(res, text)) return false;
+      if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
+      return text.length > 0;
+    });
   }).catch(() => false);
 }
 
 function probeStreamPlayable(streamUrl) {
-  return fetchTextWithTimeout(streamUrl, {
+  return fetchWithTimeout(streamUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
-  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+  }, STREAM_PROBE_TIMEOUT_MS).then((res) => {
     if ([401, 403, 404, 410, 451].includes(res.status)) return false;
     if (!res.ok && res.status !== 206) return false;
-    if (isHtmlProbeResponse(res, text)) return false;
-    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
-    return text.length > 0;
+    if (!shouldReadProbeBody(res)) return true;
+    return res.text().then((text) => {
+      if (isHtmlProbeResponse(res, text)) return false;
+      if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
+      return text.length > 0;
+    });
   }).catch(() => false);
 }
 

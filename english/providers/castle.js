@@ -483,6 +483,24 @@ function findCastleMovieId(_0x57fcd6,_0x4f8418){return __async(this,null,functio
     return headers;
   }
 
+  // Some CDNs (video-downloads.googleusercontent.com, seen on UHDMovies)
+  // ignore the Range header entirely and respond 200 with the *whole* file
+  // instead of 206 with just the requested slice. res.text() on that
+  // response means buffering an entire multi-hundred-MB/GB video into a JS
+  // string, which is what was actually causing English titles to spin
+  // forever -- not a network hang, a probe silently trying to download the
+  // whole movie before it could decide whether the movie was playable. Only
+  // read the body when it's actually bounded: a real 206 (the Range was
+  // honoured, so the body is just the requested slice) or a Content-Length
+  // small enough to be a manifest/error page rather than a video file.
+  var __streamProbeMaxBodyBytes = 2 * 1024 * 1024;
+  function __shouldReadProbeBody(res) {
+    if (res.status === 206) return true;
+    var lengthHeader = res.headers && res.headers.get && res.headers.get("content-length");
+    var length = lengthHeader ? parseInt(lengthHeader, 10) : NaN;
+    return !isNaN(length) && length <= __streamProbeMaxBodyBytes;
+  }
+
   function __probeHlsPlayback(body, manifestUrl, depth, extraHeaders) {
     var resourceUrl = __firstPlaylistEntryUrl(body, manifestUrl);
     if (!resourceUrl) return Promise.resolve(false);
@@ -493,8 +511,9 @@ function findCastleMovieId(_0x57fcd6,_0x4f8418){return __async(this,null,functio
     }
     return __fetchWithTimeout(resourceUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
       .then(function (res) {
+        if (!res.ok && res.status !== 206) return false;
+        if (!__shouldReadProbeBody(res)) return true;
         return res.text().then(function (text) {
-          if (!res.ok && res.status !== 206) return false;
           if (__isHtmlProbeResponse(res, text)) return false;
           if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, resourceUrl, depth + 1, extraHeaders);
           return text.length > 0;
@@ -506,9 +525,10 @@ function findCastleMovieId(_0x57fcd6,_0x4f8418){return __async(this,null,functio
   function __probeStreamPlayable(streamUrl, extraHeaders) {
     return __fetchWithTimeout(streamUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
       .then(function (res) {
+        if ([401, 403, 404, 410, 451].indexOf(res.status) !== -1) return false;
+        if (!res.ok && res.status !== 206) return false;
+        if (!__shouldReadProbeBody(res)) return true;
         return res.text().then(function (text) {
-          if ([401, 403, 404, 410, 451].indexOf(res.status) !== -1) return false;
-          if (!res.ok && res.status !== 206) return false;
           if (__isHtmlProbeResponse(res, text)) return false;
           if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, streamUrl, 0, extraHeaders);
           return text.length > 0;

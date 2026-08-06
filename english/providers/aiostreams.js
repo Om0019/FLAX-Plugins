@@ -74,9 +74,6 @@ function fetchJsonWithTimeout(url, options, timeoutMs) {
     return { res, data };
   });
 }
-function fetchTextWithTimeout(url, options, timeoutMs) {
-  return fetchWithTimeout(url, options, timeoutMs).then((res) => res.text().then((text) => ({ res, text })));
-}
 const STREAM_PROBE_RANGE_BYTES = 2048;
 const STREAM_PROBE_TIMEOUT_MS = 5e3;
 const STREAM_PROBE_CONCURRENCY = 4;
@@ -101,30 +98,43 @@ function firstPlaylistEntryUrl(body, manifestUrl) {
   }
   return null;
 }
+const STREAM_PROBE_MAX_BODY_BYTES = 2 * 1024 * 1024;
+function shouldReadProbeBody(res) {
+  if (res.status === 206) return true;
+  const lengthHeader = res.headers && res.headers.get && res.headers.get("content-length");
+  const length = lengthHeader ? parseInt(lengthHeader, 10) : NaN;
+  return !Number.isNaN(length) && length <= STREAM_PROBE_MAX_BODY_BYTES;
+}
 function probeHlsPlayback(body, manifestUrl, depth) {
   const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
   if (!resourceUrl) return Promise.resolve(false);
   if (depth >= 1) {
     return fetchWithTimeout(resourceUrl, { method: "HEAD" }, STREAM_PROBE_TIMEOUT_MS).then((res) => ![401, 403, 404, 410, 451].includes(res.status)).catch(() => true);
   }
-  return fetchTextWithTimeout(resourceUrl, {
+  return fetchWithTimeout(resourceUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
-  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+  }, STREAM_PROBE_TIMEOUT_MS).then((res) => {
     if (!res.ok && res.status !== 206) return false;
-    if (isHtmlProbeResponse(res, text)) return false;
-    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
-    return text.length > 0;
+    if (!shouldReadProbeBody(res)) return true;
+    return res.text().then((text) => {
+      if (isHtmlProbeResponse(res, text)) return false;
+      if (hasPlaylistEntries(text)) return probeHlsPlayback(text, resourceUrl, depth + 1);
+      return text.length > 0;
+    });
   }).catch(() => false);
 }
 function probeStreamPlayable(streamUrl) {
-  return fetchTextWithTimeout(streamUrl, {
+  return fetchWithTimeout(streamUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
-  }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
+  }, STREAM_PROBE_TIMEOUT_MS).then((res) => {
     if ([401, 403, 404, 410, 451].includes(res.status)) return false;
     if (!res.ok && res.status !== 206) return false;
-    if (isHtmlProbeResponse(res, text)) return false;
-    if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
-    return text.length > 0;
+    if (!shouldReadProbeBody(res)) return true;
+    return res.text().then((text) => {
+      if (isHtmlProbeResponse(res, text)) return false;
+      if (hasPlaylistEntries(text)) return probeHlsPlayback(text, streamUrl, 0);
+      return text.length > 0;
+    });
   }).catch(() => false);
 }
 function mapWithConcurrency(items, concurrency, worker, maxResults) {
