@@ -17,20 +17,32 @@
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
-// Timeout and any caller-supplied abort signal are raced against the request
-// rather than wired into fetch via `signal`: React Native's fetch, which is
-// what Nuvio runs, does not honour an AbortSignal the way Node's does and the
-// request fails outright when one is passed. See the equivalent note in the
-// other latino providers.
+// Nuvio's sandbox provides no timer functions -- `setTimeout` is not defined
+// there -- and its fetch does not honour an AbortSignal, so the deadline is
+// raced rather than wired into fetch, and is skipped entirely when there are
+// no timers to arm it with. See the equivalent note in the other latino
+// providers.
+const HAS_TIMERS = typeof setTimeout === 'function';
+
+function safeSetTimeout(fn, ms) {
+  return HAS_TIMERS ? setTimeout(fn, ms) : null;
+}
+
+function safeClearTimeout(id) {
+  if (HAS_TIMERS && id !== null && id !== undefined) clearTimeout(id);
+}
+
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const externalSignal = options.signal;
   const { signal, ...fetchOptions } = options;
 
-  let timeoutId;
-  let onExternalAbort;
+  if (!HAS_TIMERS && !externalSignal) return fetch(url, fetchOptions);
+
+  let timeoutId = null;
+  let onExternalAbort = null;
 
   const deadline = new Promise((_resolve, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = safeSetTimeout(() => {
       reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
 
@@ -45,7 +57,7 @@ function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   });
 
   function cleanup() {
-    clearTimeout(timeoutId);
+    safeClearTimeout(timeoutId);
     if (externalSignal && onExternalAbort) {
       externalSignal.removeEventListener('abort', onExternalAbort);
     }

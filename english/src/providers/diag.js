@@ -82,6 +82,29 @@ function checkFetchWithSignal() {
     });
 }
 
+// Presence probe for everything these providers reach for, so a missing
+// built-in shows up here rather than as a silently-swallowed empty result.
+// `setTimeout` was exactly that: absent in Nuvio's sandbox, which made every
+// timeout helper throw before its request was ever sent.
+function checkGlobals() {
+  // `typeof` on an undeclared identifier is safe -- it yields "undefined"
+  // rather than throwing -- so each of these can be probed directly.
+  var parts = [
+    'setTimeout=' + typeof setTimeout,
+    'clearTimeout=' + typeof clearTimeout,
+    'setInterval=' + typeof setInterval,
+    'AbortController=' + typeof AbortController,
+    'URL=' + typeof URL,
+    'URLSearchParams=' + typeof URLSearchParams,
+    'TextDecoder=' + typeof TextDecoder,
+    'atob=' + typeof atob,
+    'btoa=' + typeof btoa,
+    'Promise.allSettled=' + (typeof Promise !== 'undefined' ? typeof Promise.allSettled : 'no-Promise'),
+    'Promise.race=' + (typeof Promise !== 'undefined' ? typeof Promise.race : 'no-Promise')
+  ];
+  return Promise.resolve(parts.join(' '));
+}
+
 function checkFetchWithoutSignal() {
   return fetch(SIGNAL_PROBE_URL)
     .then(function (res) {
@@ -178,7 +201,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     { name: 'args', fn: function () { return Promise.resolve('tmdbId=' + tmdbId + ' mediaType=' + mediaType + ' season=' + seasonNum + ' episode=' + episodeNum); } },
     { name: 'real aiostreams flow', fn: function () { return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum); } },
     { name: 'fetch WITH signal', fn: checkFetchWithSignal },
-    { name: 'fetch WITHOUT signal', fn: checkFetchWithoutSignal }
+    { name: 'fetch WITHOUT signal', fn: checkFetchWithoutSignal },
+    { name: 'globals', fn: checkGlobals }
   ];
 
   return Promise.all(

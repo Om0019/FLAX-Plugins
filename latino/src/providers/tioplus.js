@@ -150,30 +150,51 @@ function normalizeUrl(value, baseUrl) {
   }
 }
 
+// Nuvio's sandbox provides NO timer functions -- a bare `setTimeout` call
+// there throws "'setTimeout' is not defined" (confirmed on-device). Since
+// getStreams swallows errors into an empty array, any helper that reached
+// for a timer failed silently and the provider returned zero streams, which
+// is exactly what every timeout-using provider here was doing. Plain Node,
+// used for local testing, does have timers and keeps the original
+// deadline behaviour; without them the work simply runs to completion.
+const HAS_TIMERS = typeof setTimeout === 'function';
+
+function safeSetTimeout(fn, ms) {
+  return HAS_TIMERS ? setTimeout(fn, ms) : null;
+}
+
+function safeClearTimeout(id) {
+  if (HAS_TIMERS && id !== null && id !== undefined) clearTimeout(id);
+}
+
 /**
  * Promise-chain equivalent of the original addon's fetchWithDeadline.
  *
  * The deadline and any caller-supplied abort signal are raced against the
- * request, NOT wired into fetch via `signal`. Nuvio runs on React Native,
- * whose fetch does not honour an AbortSignal the way Node's does -- passing
- * `signal` makes the request fail outright, and since getStreams swallows
- * errors into an empty array, every AbortController-based provider silently
- * returned zero streams on-device while working fine under Node. (Exactly
- * the providers that avoid AbortController are the ones that were observed
- * working in the app.) Racing can't cancel the underlying request, so a
- * timed-out or abandoned fetch runs to completion in the background; that's
- * an acceptable trade for a request that actually completes, and callers
+ * request rather than wired into fetch via `signal`: React Native's fetch,
+ * which is what Nuvio runs, does not honour an AbortSignal the way Node's
+ * does. Racing can't cancel the underlying request, so a timed-out or
+ * abandoned fetch runs to completion in the background; that's an
+ * acceptable trade for a request that actually completes, and callers
  * already treat these rejections as "move on to the next candidate".
+ *
+ * With no timers available there is nothing to enforce a deadline with, so
+ * the request is simply returned as-is (still honouring an external abort
+ * signal if one was supplied).
  */
 function fetchWithDeadline(url, options, timeoutMs, consume) {
   const externalSignal = options.signal;
   const { signal, ...fetchOptions } = options;
 
-  let timeoutId;
-  let onExternalAbort;
+  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
+
+  if (!HAS_TIMERS && !externalSignal) return request;
+
+  let timeoutId = null;
+  let onExternalAbort = null;
 
   const deadline = new Promise((_resolve, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = safeSetTimeout(() => {
       reject(new Error(`Fetch timeout after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
 
@@ -188,13 +209,11 @@ function fetchWithDeadline(url, options, timeoutMs, consume) {
   });
 
   function cleanup() {
-    clearTimeout(timeoutId);
+    safeClearTimeout(timeoutId);
     if (externalSignal && onExternalAbort) {
       externalSignal.removeEventListener('abort', onExternalAbort);
     }
   }
-
-  const request = fetch(url, fetchOptions).then((res) => Promise.resolve(consume(res)));
 
   return Promise.race([request, deadline]).then(
     (result) => {
@@ -1414,8 +1433,8 @@ function mapWithConcurrencyUntilEnough(items, concurrency, worker, options = {})
     const finish = () => {
       if (settled) return;
       settled = true;
-      if (minWaitTimer) clearTimeout(minWaitTimer);
-      if (timeoutTimer) clearTimeout(timeoutTimer);
+      safeClearTimeout(minWaitTimer);
+      safeClearTimeout(timeoutTimer);
       if (signal) signal.removeEventListener('abort', finish);
       resolve([...results]);
     };
@@ -1442,8 +1461,11 @@ function mapWithConcurrencyUntilEnough(items, concurrency, worker, options = {})
       }
     };
 
-    if (minWaitMs > 0) {
-      minWaitTimer = setTimeout(() => {
+    // With no timers the fast-return grace period can't be armed, so the
+    // fast path is enabled immediately and this settles once every token has
+    // completed (see maybeFinish).
+    if (minWaitMs > 0 && HAS_TIMERS) {
+      minWaitTimer = safeSetTimeout(() => {
         fastReturnEnabled = true;
         minResults = Math.min(minResults, relaxedMinResults);
         maybeFinish();
@@ -1453,7 +1475,7 @@ function mapWithConcurrencyUntilEnough(items, concurrency, worker, options = {})
     }
 
     if (timeoutMs > 0) {
-      timeoutTimer = setTimeout(() => {
+      timeoutTimer = safeSetTimeout(() => {
         console.warn(`TioPlus: Token collection timed out with ${results.length} streams.`);
         finish();
       }, timeoutMs);

@@ -1,5 +1,7 @@
-// Built from src/providers/diag.js -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/diag.js > providers/diag.js
+// Built from src/providers/diag.js for the restricted runtime Nuvio's local-scraper
+// sandbox provides -- do not hand-edit. Regenerate with:
+//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/diag.js > english/providers/diag.js
+// Edit src/providers/diag.js instead, then rebuild.
 function checkFetch() {
   if (typeof fetch === "undefined") return Promise.resolve("fetch is undefined");
   return Promise.resolve("fetch is available");
@@ -55,6 +57,22 @@ function checkFetchWithSignal() {
     clearTimeout(timeoutId);
     return "FAILED: name=" + (error && error.name) + " message=" + (error && error.message);
   });
+}
+function checkGlobals() {
+  var parts = [
+    "setTimeout=" + typeof setTimeout,
+    "clearTimeout=" + typeof clearTimeout,
+    "setInterval=" + typeof setInterval,
+    "AbortController=" + typeof AbortController,
+    "URL=" + typeof URL,
+    "URLSearchParams=" + typeof URLSearchParams,
+    "TextDecoder=" + typeof TextDecoder,
+    "atob=" + typeof atob,
+    "btoa=" + typeof btoa,
+    "Promise.allSettled=" + (typeof Promise !== "undefined" ? typeof Promise.allSettled : "no-Promise"),
+    "Promise.race=" + (typeof Promise !== "undefined" ? typeof Promise.race : "no-Promise")
+  ];
+  return Promise.resolve(parts.join(" "));
 }
 function checkFetchWithoutSignal() {
   return fetch(SIGNAL_PROBE_URL).then(function(res) {
@@ -154,7 +172,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       return realAiostreamsFlow(tmdbId, mediaType, seasonNum, episodeNum);
     } },
     { name: "fetch WITH signal", fn: checkFetchWithSignal },
-    { name: "fetch WITHOUT signal", fn: checkFetchWithoutSignal }
+    { name: "fetch WITHOUT signal", fn: checkFetchWithoutSignal },
+    { name: "globals", fn: checkGlobals }
   ];
   return Promise.all(
     checks.map(function(check) {
