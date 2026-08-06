@@ -57,7 +57,7 @@
     {
       "id": "Castle",
       "name": "Castle",
-      "description": "English movies and series scraped from Castle. Patched to require a strict (75% token-coverage) title match instead of a loose substring match that accepted wrong titles.",
+      "description": "English movies and series scraped from Castle. Patched to require a strict (75% token-coverage) title match instead of a loose substring match that accepted wrong titles, and to allow single-word titles (that check previously rejected every 1-word title outright, e.g. Inception, Barbie). Also carries a pure-JS AES-CBC decrypt so it no longer crashes on Nuvio's missing crypto-js.",
       "version": "1.0.0",
       "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
       "supportedTypes": ["movie", "tv"],
@@ -83,7 +83,7 @@
     {
       "id": "HDHub4u",
       "name": "HDHub4u",
-      "description": "English/Hindi movies and series scraped from HDHub4u. Patched so its first-result fallback only fires when the candidate covers 75% of the query's title tokens, fixing wrong-title matches like \"P.S. I Love You\" for \"I Love You Phillip Morris\".",
+      "description": "English/Hindi movies and series scraped from HDHub4u. Patched so its first-result fallback only fires when the candidate covers 75% of the query's title tokens, fixing wrong-title matches like \"P.S. I Love You\" for \"I Love You Phillip Morris\". Also carries a pure-JS AES-CBC decrypt so it no longer crashes on Nuvio's missing crypto-js (used by one of its extractors).",
       "version": "1.0.0",
       "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
       "supportedTypes": ["movie", "tv"],
