@@ -1337,11 +1337,8 @@ function scoreCandidate(result, title, originalTitle, year, type, extraTitles = 
   return score;
 }
 function runLaMovieQuery(query, title, originalTitle, year, type, userAgent, signal, extraTitles) {
-  const url = new URL(`${LAMOVIE_API_URL}/search`);
-  url.searchParams.set("postType", "any");
-  url.searchParams.set("q", query);
-  url.searchParams.set("postsPerPage", "10");
-  return fetchJsonWithTimeout(url.toString(), {
+  const url = `${LAMOVIE_API_URL}/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=10`;
+  return fetchJsonWithTimeout(url, {
     headers: { "User-Agent": userAgent, Accept: "application/json" },
     signal
   }, LAMOVIE_SEARCH_TIMEOUT_MS).then(({ res, data }) => {
@@ -1378,12 +1375,8 @@ function lamovieSearch(title, originalTitle, year, type, userAgent, signal, extr
 }
 function getEpisodePostId(seriesId, season, episode, userAgent, signal) {
   if (!seriesId || !season || !episode) return Promise.resolve(null);
-  const url = new URL(`${LAMOVIE_API_URL}/single/episodes/list`);
-  url.searchParams.set("_id", seriesId);
-  url.searchParams.set("season", season);
-  url.searchParams.set("page", "1");
-  url.searchParams.set("postsPerPage", "80");
-  return fetchJsonWithTimeout(url.toString(), {
+  const url = `${LAMOVIE_API_URL}/single/episodes/list?_id=${encodeURIComponent(seriesId)}&season=${encodeURIComponent(season)}&page=1&postsPerPage=80`;
+  return fetchJsonWithTimeout(url, {
     headers: { "User-Agent": userAgent, Accept: "application/json" },
     signal
   }, LAMOVIE_EPISODES_TIMEOUT_MS).then(({ res, data }) => {
@@ -1411,10 +1404,8 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
     }) : Promise.resolve(match._id);
     return postIdPromise.then((postId) => {
       if (!postId) return [];
-      const playerUrl = new URL(`${LAMOVIE_API_URL}/player`);
-      playerUrl.searchParams.set("postId", postId);
-      playerUrl.searchParams.set("demo", "0");
-      return fetchJsonWithTimeout(playerUrl.toString(), {
+      const playerUrl = `${LAMOVIE_API_URL}/player?postId=${encodeURIComponent(postId)}&demo=0`;
+      return fetchJsonWithTimeout(playerUrl, {
         headers: { "User-Agent": userAgent, Accept: "application/json", Referer: LAMOVIE_BASE_URL },
         signal
       }, LAMOVIE_PLAYER_TIMEOUT_MS).then(({ res: playerRes, data: playerData }) => {
@@ -1544,11 +1535,8 @@ function diagStream(text) {
   };
 }
 function rawSearchProbe(query) {
-  const url = new URL(`${LAMOVIE_API_URL}/search`);
-  url.searchParams.set("postType", "any");
-  url.searchParams.set("q", query);
-  url.searchParams.set("postsPerPage", "10");
-  return fetchTextWithTimeout(url.toString(), {
+  const url = `${LAMOVIE_API_URL}/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=10`;
+  return fetchTextWithTimeout(url, {
     headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", Accept: "application/json" }
   }, LAMOVIE_SEARCH_TIMEOUT_MS).then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, " ")}"`).catch((error) => `rawProbe: FETCH ERROR ${error && error.message}`);
 }
