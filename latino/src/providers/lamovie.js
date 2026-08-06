@@ -1967,7 +1967,7 @@ function toNuvioStream(internalStream) {
 // to tap the card -- tapping instead tries to play the (fake) url. So the
 // trail goes in `name`, not `title`.
 function diagStream(text) {
-  const summary = String(text).replace(/\s+/g, ' ').trim().slice(0, 200);
+  const summary = String(text).replace(/\s+/g, ' ').trim().slice(0, 320);
   return {
     name: `⚠️ ${summary}`,
     title: 'LaMovie diag',
@@ -1978,15 +1978,34 @@ function diagStream(text) {
   };
 }
 
+// One raw, minimally-processed hit at the exact search endpoint scrape()
+// uses, so a zero-result trail can show what the device's fetch actually got
+// back (blocked/interstitial response, empty body, unexpected status)
+// instead of just "0 raw results" -- which looks identical whether the site
+// said no or the request never reached real content.
+function rawSearchProbe(query) {
+  const url = new URL(`${LAMOVIE_API_URL}/search`);
+  url.searchParams.set('postType', 'any');
+  url.searchParams.set('q', query);
+  url.searchParams.set('postsPerPage', '10');
+  return fetchTextWithTimeout(url.toString(), {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', Accept: 'application/json' }
+  }, LAMOVIE_SEARCH_TIMEOUT_MS)
+    .then(({ res, text }) => `rawProbe: HTTP ${res.status}, ${text.length}b, starts "${text.slice(0, 60).replace(/\s+/g, ' ')}"`)
+    .catch((error) => `rawProbe: FETCH ERROR ${error && error.message}`);
+}
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === 'tv' ? 'series' : 'movie';
   const trail = [];
+  let lastTitle = null;
 
   return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
     .then(([details, extraTitles]) => {
       trail.push(details && details.title ? `tmdb: title="${details.title}" year=${details.year}` : 'tmdb: no details/title');
       trail.push(`altTitles: ${extraTitles ? extraTitles.length : 0}`);
       if (!details || !details.title) return [];
+      lastTitle = details.title;
 
       return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) => {
         trail.push(`scrape: ${(results || []).length} raw result(s)`);
@@ -2000,7 +2019,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         });
       });
     })
-    .then((streams) => (streams && streams.length > 0 ? streams : [diagStream(trail.join(' | '))]))
+    .then((streams) => {
+      if (streams && streams.length > 0) return streams;
+      if (!lastTitle) return [diagStream(trail.join(' | '))];
+      return rawSearchProbe(lastTitle).then((probeText) => {
+        trail.push(probeText);
+        return [diagStream(trail.join(' | '))];
+      });
+    })
     .catch((error) => {
       console.error('LaMovie (Nuvio): getStreams failed:', error && error.message);
       trail.push(`THREW: ${error && error.message}`);
