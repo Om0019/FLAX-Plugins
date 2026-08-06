@@ -65,12 +65,12 @@ Every provider here (the 8 vendored scrapers via an appended wrapper, plus
 before returning it — mirroring the same check the Latino providers already
 ran — and drops anything that comes back 401/403/404/410/451, is actually an
 HTML error page, or an HLS manifest whose first segment doesn't check out.
-Streams that survive are capped at 5 per provider (known resolution sorted
+Streams that survive are capped at 2 per provider (known resolution sorted
 first, so a 1080p result beats an unlabeled one) instead of returning
 everything a scraper found, so a title with several working sources doesn't
 turn into dozens of cards. `AIOStreams` is also listed first in
 `manifest.json` so its results are the first Nuvio shows when it resolves,
-and within its own 5 it sorts already-cached (instantly playable) links
+and within its own 2 it sorts already-cached (instantly playable) links
 ahead of uncached ones.
 
 ## Disabled providers

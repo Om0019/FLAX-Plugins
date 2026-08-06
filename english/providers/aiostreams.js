@@ -153,7 +153,7 @@ function mapWithConcurrency(items, concurrency, worker) {
     for (let i = 0; i < runners; i += 1) runNext();
   });
 }
-const MAX_STREAMS_PER_PROVIDER = 5;
+const MAX_STREAMS_PER_PROVIDER = 2;
 const STREAM_RESOLUTION_RANK = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
 function finalizeStreams(streams) {
   return streams.map((stream, index) => ({ stream, index })).sort((a, b) => {

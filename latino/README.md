@@ -79,7 +79,7 @@ making every card from a given provider look identical except for its name.
 `quality` now falls back to the embed server's own label (e.g. "Voe",
 "Streamtape") stripped of its leading flag/arrow emoji when no real
 resolution is found, so cards from the same provider stay distinguishable.
-Each provider's own contribution to the merged list is also capped at 5
+Each provider's own contribution to the merged list is also capped at 2
 (known resolution sorted first) instead of returning everything it found,
 so nine providers combined don't turn into a huge list for one title.
 

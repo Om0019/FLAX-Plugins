@@ -292,7 +292,7 @@ function getStreams(_0x2a657f,_0x5ae44d,_0x5d6dbc,_0xe3df52){var _0x7d8a16={_0x2
   // combined list Nuvio shows can otherwise run into the dozens for one
   // title. Known resolutions sort first (higher first), everything else
   // keeps the order probing produced it in.
-  var __maxStreamsPerProvider = 5;
+  var __maxStreamsPerProvider = 2;
   var __streamResolutionRankMap = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
   function __finalizeStreams(streams) {
     return streams

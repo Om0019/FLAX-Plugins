@@ -2259,7 +2259,7 @@ function deriveServerLabel(internalStream) {
 // list Nuvio shows can otherwise run into the dozens for one title. Known
 // resolutions sort first (higher first), everything else keeps the order
 // probing produced it in.
-const MAX_STREAMS_PER_PROVIDER = 5;
+const MAX_STREAMS_PER_PROVIDER = 2;
 const STREAM_RESOLUTION_RANK = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1, '360p': 0 };
 function finalizeStreams(streams) {
   return (streams || [])
