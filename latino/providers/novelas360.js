@@ -1230,7 +1230,9 @@ function firstPlaylistEntryUrl(body, manifestUrl) {
 function probeHlsPlayback(body, manifestUrl, depth) {
   const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
   if (!resourceUrl) return Promise.resolve(false);
-  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) return Promise.resolve(true);
+  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) {
+    return fetchWithTimeout(resourceUrl, { method: "HEAD" }, STREAM_PROBE_TIMEOUT_MS).then((res) => ![401, 403, 404, 410, 451].includes(res.status)).catch(() => true);
+  }
   return fetchTextWithTimeout(resourceUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
   }, STREAM_PROBE_TIMEOUT_MS).then(({ res, text }) => {
