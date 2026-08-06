@@ -1984,9 +1984,20 @@ function firstPlaylistEntryUrl(body, manifestUrl) {
 function probeHlsPlayback(body, manifestUrl, depth) {
   const resourceUrl = firstPlaylistEntryUrl(body, manifestUrl);
   if (!resourceUrl) return Promise.resolve(false);
-  // Chased far enough to be confident this manifest actually names real
-  // media rather than proving every hop is itself another playlist.
-  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) return Promise.resolve(true);
+  // Chased far enough to trust this manifest names real media without
+  // downloading it -- the final hop (the binary segment) is only HEAD-
+  // checked, never GET-with-Range'd: an on-device trace showed fetch()
+  // consistently fails to download a binary Range response here even for
+  // segments that play fine (status 0, no error), while HEAD has no body
+  // to fail on. Only explicit block/gone statuses count as dead; anything
+  // else (including that same status-0 quirk showing up on HEAD) is
+  // trusted rather than rejected, since the goal is catching genuinely
+  // expired links without reintroducing false negatives on live ones.
+  if (depth >= STREAM_HLS_PROBE_MAX_DEPTH) {
+    return fetchWithTimeout(resourceUrl, { method: 'HEAD' }, STREAM_PROBE_TIMEOUT_MS)
+      .then((res) => !([401, 403, 404, 410, 451].includes(res.status)))
+      .catch(() => true);
+  }
 
   return fetchTextWithTimeout(resourceUrl, {
     headers: { Range: `bytes=0-${STREAM_PROBE_RANGE_BYTES - 1}` }
