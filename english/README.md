@@ -73,6 +73,15 @@ turn into dozens of cards. `AIOStreams` is also listed first in
 and within its own 2 it sorts already-cached (instantly playable) links
 ahead of uncached ones.
 
+Because the sandbox has no timers (above), a probed candidate that never
+settles — a blackholed CDN, a host that accepts the connection and never
+answers — used to leave the whole provider's `getStreams()` waiting forever,
+since the original concurrency helper only resolved once every candidate had
+settled. That surfaced as the whole English list spinning indefinitely with
+nothing shown. Every provider's probing helper now resolves as soon as it
+has already found enough playable streams to fill its 2-per-provider cap,
+instead of waiting on stragglers that may never finish.
+
 ## Disabled providers
 
 `VidLink`, `VidFast` and `VidSrc` are present but disabled in

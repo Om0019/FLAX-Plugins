@@ -533,7 +533,16 @@ function calculateTitleSimilarity(_0x46b3e4,_0x1b01ae){const _0x2979ac={_0x54fa9
       .catch(function () { return false; });
   }
 
-  function __mapWithConcurrency(items, concurrency, worker) {
+  // Nuvio's sandbox has no setTimeout/clearTimeout (see README), so a probe
+  // fetch that never settles -- a blackholed CDN, a host that accepts the
+  // connection and never answers -- can't be given a real timeout. Waiting
+  // for every single item to settle before resolving meant one such stream
+  // stalled this provider's getStreams() forever, leaving the whole English
+  // list spinning with nothing shown. Once enough playable streams have
+  // already been found to satisfy maxResults (the same cap __finalizeStreams
+  // applies below), stop waiting on the rest -- their eventual results, if
+  // any, are discarded rather than awaited.
+  function __mapWithConcurrency(items, concurrency, worker, maxResults) {
     return new Promise(function (resolve) {
       if (items.length === 0) {
         resolve([]);
@@ -542,6 +551,12 @@ function calculateTitleSimilarity(_0x46b3e4,_0x1b01ae){const _0x2979ac={_0x54fa9
       var results = [];
       var cursor = 0;
       var doneCount = 0;
+      var settled = false;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        resolve(results);
+      }
       function runNext() {
         while (cursor < items.length) {
           var index = cursor;
@@ -550,9 +565,11 @@ function calculateTitleSimilarity(_0x46b3e4,_0x1b01ae){const _0x2979ac={_0x54fa9
             .then(function () { return worker(items[index], index); })
             .catch(function () { return null; })
             .then(function (result) {
+              if (settled) return;
               if (result) results.push(result);
               doneCount += 1;
-              if (doneCount === items.length) resolve(results);
+              if (maxResults && results.length >= maxResults) finish();
+              else if (doneCount === items.length) finish();
               else runNext();
             });
           return;
@@ -589,7 +606,7 @@ function calculateTitleSimilarity(_0x46b3e4,_0x1b01ae){const _0x2979ac={_0x54fa9
         var templated = (streams || []).map(__applyStreamTemplate);
         return __mapWithConcurrency(templated, __streamProbeConcurrency, function (stream) {
           return __probeStreamPlayable(stream.url, stream.headers).then(function (playable) { return playable ? stream : null; });
-        }).then(__finalizeStreams);
+        }, __maxStreamsPerProvider).then(__finalizeStreams);
       });
     };
   }
