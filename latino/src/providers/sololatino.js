@@ -2110,26 +2110,49 @@ function extractStreamResolution(quality, title, name) {
   return match[1].toLowerCase() === '4k' ? '2160p' : match[1].toLowerCase();
 }
 
+// ---------------------------------------------------------------------------
+// MediaFlow Proxy: routes header-gated CDN links through a self-hosted
+// MediaFlow Proxy instance (https://github.com/mhdzumair/mediaflow-proxy)
+// instead of handing Nuvio's player the raw signed CDN URL directly.
+//
+// This exists because Nuvio's local-scraper model has no server of its own
+// (unlike the upstream Latino Stremio addon, whose src/server.js proxies
+// every header-carrying stream through its own /proxy/:filename route and
+// rewrites the HLS manifest so every variant/segment URI also goes back
+// through it -- see rewriteHlsManifest there). Nuvio just hands the scraper's
+// URL straight to its player, so if the player doesn't forward
+// behaviorHints.proxyHeaders to every sub-request an HLS playback makes
+// (master playlist, then each variant, then each segment), header-gated
+// streams stall. Routing through /proxy/hls/manifest.m3u8 sidesteps that
+// entirely: MediaFlow Proxy fetches the manifest itself with the right
+// headers and rewrites every URI inside it to also route back through
+// itself, so the player never needs to send a custom header at all.
+// ---------------------------------------------------------------------------
+const MEDIAFLOW_PROXY_BASE_URL = 'https://proxy.fl4x.com';
+const MEDIAFLOW_PROXY_API_PASSWORD = '1357';
+const HLS_URL_PATTERN = /\.m3u8(?:$|[?#])/i;
+
+function toMediaflowProxyUrl(targetUrl, headers) {
+  const endpoint = HLS_URL_PATTERN.test(String(targetUrl || '')) ? 'proxy/hls/manifest.m3u8' : 'proxy/stream';
+  const params = new URLSearchParams();
+  params.set('d', targetUrl);
+  if (headers && headers['User-Agent']) params.set('h_user-agent', headers['User-Agent']);
+  if (headers && headers.Referer) params.set('h_referer', headers.Referer);
+  params.set('api_password', MEDIAFLOW_PROXY_API_PASSWORD);
+  return `${MEDIAFLOW_PROXY_BASE_URL}/${endpoint}?${params.toString()}`;
+}
+
 function toNuvioStream(internalStream) {
   const container = extractStreamContainer(internalStream.url);
   const resolution = extractStreamResolution(internalStream.quality, internalStream.title, internalStream.name);
   const nuvioStream = {
     name: internalStream.name,
     title: ['Latino', container, resolution].filter(Boolean).join(' • ') || ' ',
-    url: internalStream.url,
+    url: toMediaflowProxyUrl(internalStream.url, internalStream.headers),
     quality: 'Unknown',
     size: 'Unknown',
-    headers: internalStream.headers,
     provider: 'sololatino'
   };
-
-  if (internalStream.headers) {
-    nuvioStream.behaviorHints = {
-      proxyHeaders: {
-        request: internalStream.headers
-      }
-    };
-  }
 
   return nuvioStream;
 }
