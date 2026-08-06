@@ -1,12 +1,12 @@
 {
   "name": "Latino Nuvio Providers",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "scrapers": [
     {
       "id": "SoloLatino",
       "name": "SoloLatino",
       "description": "Spanish-dubbed/subtitled movies and series scraped from sololatino.net. embed69 links (its main working source) now resolve: implements AES-256-CBC decrypt and the SHA-256 proof-of-work it requires from scratch, since Nuvio's sandbox has no crypto module. Temporarily reports a single non-playable \"⚠️ SoloLatino diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed.",
-      "version": "1.0.8",
+      "version": "1.0.9",
       "author": "Ported from the Latino Stremio addon",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/sololatino.js",
@@ -71,7 +71,7 @@
       "id": "LaMovie",
       "name": "LaMovie",
       "description": "Spanish-dubbed/subtitled movies and series scraped from lamovie.org. Temporarily reports a single non-playable \"⚠️ LaMovie diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed.",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "author": "Ported from the Latino Stremio addon",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/lamovie.js",
@@ -97,7 +97,7 @@
       "id": "TLNovelas",
       "name": "TLNovelas",
       "description": "Spanish-dubbed telenovelas scraped from ww2.tlnovelas.net (series only). Temporarily reports a single non-playable \"⚠️ TLNovelas diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed.",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "author": "Ported from the Latino Stremio addon",
       "supportedTypes": ["tv"],
       "filename": "providers/tlnovelas.js",
