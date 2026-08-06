@@ -423,6 +423,24 @@ function cleanText(value) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * A short target title (e.g. "El Origen") can be a coincidental substring of
+ * a long, unrelated candidate title (e.g. "Pesadilla en Elm Street: El
+ * Origen") once whitespace is stripped by cleanText -- that false positive
+ * scored the same as a real match and won ties against the correct result.
+ * Requiring the shorter string to cover a reasonable share of the longer one
+ * keeps genuine (if imperfectly-formatted) matches while rejecting titles
+ * that only happen to contain the target somewhere in the middle.
+ */
+function looseIncludes(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+  return shorter.length / longer.length >= 0.5;
+}
+
 function extractCandidateYears(...values) {
   const years = new Set();
   for (const value of values) {
@@ -1030,8 +1048,353 @@ function resolveFilemoon() {
 function resolvePelisplus() {
   return Promise.resolve(null);
 }
-function decryptEmbed69() {
-  return null;
+// ---------------------------------------------------------------------------
+// pure-JS crypto (SHA-256 + AES-256 CBC decrypt), for embed69's proof-of-work
+// gate. Nuvio's sandbox has no `crypto` module and node-forge-style libraries
+// assume a Node/browser environment this sandbox doesn't provide either, so
+// this is a from-scratch implementation, verified against Node's own `crypto`
+// (SHA-256: empty/short/long/unicode/200 randomized strings; AES-256-CBC: 100
+// randomized encrypt-with-Node/decrypt-with-this round-trips, plus the exact
+// IV||ciphertext/base64 shape embed69 uses) before being wired in here.
+// Ported verbatim from providers/sololatino.js.
+// ---------------------------------------------------------------------------
+
+const SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
+function rotr32(x, n) {
+  return ((x >>> n) | (x << (32 - n))) >>> 0;
+}
+
+/** Encodes a JS string as UTF-8 bytes (the inverse of bytesToUtf8String). */
+function stringToUtf8Bytes(str) {
+  const bytes = [];
+  for (let i = 0; i < str.length; i += 1) {
+    let code = str.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+        i += 1;
+      }
+    }
+    if (code < 0x80) {
+      bytes.push(code);
+    } else if (code < 0x800) {
+      bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code < 0x10000) {
+      bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    }
+  }
+  return bytes;
+}
+
+function sha256Words(bytes) {
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+  const bitLenLow = (bytes.length * 8) >>> 0;
+  const msg = bytes.slice();
+  msg.push(0x80);
+  while (msg.length % 64 !== 56) msg.push(0);
+  msg.push(0, 0, 0, 0);
+  msg.push((bitLenLow >>> 24) & 0xff, (bitLenLow >>> 16) & 0xff, (bitLenLow >>> 8) & 0xff, bitLenLow & 0xff);
+
+  const w = new Array(64);
+  for (let chunkStart = 0; chunkStart < msg.length; chunkStart += 64) {
+    for (let i = 0; i < 16; i += 1) {
+      const o = chunkStart + i * 4;
+      w[i] = ((msg[o] << 24) | (msg[o + 1] << 16) | (msg[o + 2] << 8) | msg[o + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i += 1) {
+      const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      h = g; g = f; f = e; e = (d + temp1) >>> 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4, h5, h6, h7];
+}
+
+function sha256Hex(str) {
+  return sha256Words(stringToUtf8Bytes(str))
+    .map((word) => (word >>> 0).toString(16).padStart(8, '0'))
+    .join('');
+}
+
+/** SHA-256 digest as a 32-byte array, for use as key material (embed69's AES key). */
+function sha256RawBytes(str) {
+  const words = sha256Words(stringToUtf8Bytes(str));
+  const bytes = [];
+  for (const word of words) {
+    bytes.push((word >>> 24) & 0xff, (word >>> 16) & 0xff, (word >>> 8) & 0xff, word & 0xff);
+  }
+  return bytes;
+}
+
+function gmul(a, b) {
+  let p = 0;
+  let x = a;
+  let y = b;
+  for (let i = 0; i < 8; i += 1) {
+    if (y & 1) p ^= x;
+    const hiBitSet = x & 0x80;
+    x = (x << 1) & 0xff;
+    if (hiBitSet) x ^= 0x1b;
+    y >>= 1;
+  }
+  return p;
+}
+
+/**
+ * AES S-box/inverse S-box, generated from their algebraic definition
+ * (multiplicative inverse in GF(2^8), then the standard affine map) rather
+ * than hand-transcribed from a 256-entry reference table.
+ */
+function buildAesTables() {
+  const inv = new Array(256).fill(0);
+  for (let a = 1; a < 256; a += 1) {
+    for (let b = 1; b < 256; b += 1) {
+      if (gmul(a, b) === 1) {
+        inv[a] = b;
+        break;
+      }
+    }
+  }
+
+  const rotl8 = (v, n) => ((v << n) | (v >>> (8 - n))) & 0xff;
+
+  const sbox = new Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    const x = inv[i];
+    sbox[i] = x ^ rotl8(x, 1) ^ rotl8(x, 2) ^ rotl8(x, 3) ^ rotl8(x, 4) ^ 0x63;
+  }
+
+  const invSbox = new Array(256);
+  for (let i = 0; i < 256; i += 1) invSbox[sbox[i]] = i;
+
+  return { sbox, invSbox };
+}
+
+const AES_TABLES = buildAesTables();
+const AES_SBOX = AES_TABLES.sbox;
+const AES_INV_SBOX = AES_TABLES.invSbox;
+const AES_RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d];
+
+/** AES-256 key expansion: 32-byte key -> 60 round-key words (Nb*(Nr+1), Nr=14). */
+function aes256KeyExpansion(key) {
+  const Nk = 8, Nr = 14, Nb = 4;
+  const w = [];
+  for (let i = 0; i < Nk; i += 1) {
+    w.push([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+  }
+  for (let i = Nk; i < Nb * (Nr + 1); i += 1) {
+    let temp = w[i - 1].slice();
+    if (i % Nk === 0) {
+      temp = [temp[1], temp[2], temp[3], temp[0]];
+      temp = temp.map((b) => AES_SBOX[b]);
+      temp[0] ^= AES_RCON[i / Nk - 1];
+    } else if (Nk > 6 && i % Nk === 4) {
+      temp = temp.map((b) => AES_SBOX[b]);
+    }
+    w.push(w[i - Nk].map((b, idx) => b ^ temp[idx]));
+  }
+  return w;
+}
+
+function addRoundKey(state, w, round) {
+  for (let c = 0; c < 4; c += 1) {
+    for (let r = 0; r < 4; r += 1) {
+      state[r][c] ^= w[round * 4 + c][r];
+    }
+  }
+}
+
+function invSubBytes(state) {
+  for (let r = 0; r < 4; r += 1) {
+    for (let c = 0; c < 4; c += 1) {
+      state[r][c] = AES_INV_SBOX[state[r][c]];
+    }
+  }
+}
+
+function invShiftRows(state) {
+  for (let r = 1; r < 4; r += 1) {
+    const row = state[r];
+    state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r));
+  }
+}
+
+function invMixColumns(state) {
+  for (let c = 0; c < 4; c += 1) {
+    const a0 = state[0][c], a1 = state[1][c], a2 = state[2][c], a3 = state[3][c];
+    state[0][c] = gmul(a0, 0x0e) ^ gmul(a1, 0x0b) ^ gmul(a2, 0x0d) ^ gmul(a3, 0x09);
+    state[1][c] = gmul(a0, 0x09) ^ gmul(a1, 0x0e) ^ gmul(a2, 0x0b) ^ gmul(a3, 0x0d);
+    state[2][c] = gmul(a0, 0x0d) ^ gmul(a1, 0x09) ^ gmul(a2, 0x0e) ^ gmul(a3, 0x0b);
+    state[3][c] = gmul(a0, 0x0b) ^ gmul(a1, 0x0d) ^ gmul(a2, 0x09) ^ gmul(a3, 0x0e);
+  }
+}
+
+function aes256DecryptBlock(block, w) {
+  const Nr = 14;
+  const state = [[], [], [], []];
+  for (let i = 0; i < 16; i += 1) state[i % 4][(i / 4) | 0] = block[i];
+
+  addRoundKey(state, w, Nr);
+  for (let round = Nr - 1; round >= 1; round -= 1) {
+    invShiftRows(state);
+    invSubBytes(state);
+    addRoundKey(state, w, round);
+    invMixColumns(state);
+  }
+  invShiftRows(state);
+  invSubBytes(state);
+  addRoundKey(state, w, 0);
+
+  const out = new Array(16);
+  for (let i = 0; i < 16; i += 1) out[i] = state[i % 4][(i / 4) | 0];
+  return out;
+}
+
+/** AES-256-CBC decrypt. `ciphertextBytes` must be a whole number of 16-byte blocks. */
+function aes256CbcDecrypt(keyBytes, ivBytes, ciphertextBytes) {
+  const w = aes256KeyExpansion(keyBytes);
+  const plaintext = [];
+  let prevBlock = ivBytes;
+  for (let offset = 0; offset < ciphertextBytes.length; offset += 16) {
+    const block = ciphertextBytes.slice(offset, offset + 16);
+    const decrypted = aes256DecryptBlock(block, w);
+    for (let i = 0; i < 16; i += 1) plaintext.push(decrypted[i] ^ prevBlock[i]);
+    prevBlock = block;
+  }
+  return plaintext;
+}
+
+function stripPkcs7PaddingBytes(bytes) {
+  const pad = bytes[bytes.length - 1];
+  if (!Number.isInteger(pad) || pad < 1 || pad > 16 || pad > bytes.length) return bytes;
+  return bytes.slice(0, bytes.length - pad);
+}
+
+// embed69 states its own proof-of-work difficulty; the search costs 16^difficulty
+// hashes. This is pure JS, not the native `crypto` the original addon (and
+// embed69's own real-browser callers, likely via WebCrypto) relies on, so the
+// time budget here is calibrated for that: ~130k-500k hashes/sec measured for
+// this file's sha256Hex, so difficulty 5 (16^5 ≈ 1.05M hashes) can already cost
+// several seconds, and difficulty 6 is not attempted. The search runs in chunks
+// with a `Promise.resolve().then()` hop between them so it doesn't monopolise
+// the single JS thread for its whole duration, and honours the same deadline/
+// difficulty caps in spirit as the original addon's native-crypto version.
+const EMBED69_MAX_POW_DIFFICULTY = 5;
+const EMBED69_MAX_POW_MS = 8000;
+const EMBED69_POW_CHUNK = 4000;
+
+function solveEmbed69ProofOfWork(challenge, difficulty) {
+  const prefix = '0'.repeat(difficulty);
+  const deadline = Date.now() + EMBED69_MAX_POW_MS;
+  let nonce = 0;
+
+  function step() {
+    const chunkEnd = nonce + EMBED69_POW_CHUNK;
+    for (; nonce < chunkEnd; nonce += 1) {
+      if (sha256Hex(challenge + nonce).startsWith(prefix)) return nonce;
+    }
+    if (Date.now() > deadline) {
+      console.warn(`Cinecalidad: embed69 proof-of-work (difficulty ${difficulty}) exceeded ${EMBED69_MAX_POW_MS}ms after ${nonce} nonces; giving up.`);
+      return null;
+    }
+    return Promise.resolve().then(step);
+  }
+
+  return Promise.resolve().then(step);
+}
+
+function decryptEmbed69(html) {
+  const powChallengeMatch = html.match(/const POW_CHALLENGE = '([^']+)';/);
+  const powDifficultyMatch = html.match(/const POW_DIFFICULTY = (\d+);/);
+  const powSaltMatch = html.match(/const POW_SALT = '([^']+)';/);
+  const dataLinkMatch = html.match(/let dataLink = (\[.*?\]);/);
+
+  if (!powChallengeMatch || !powDifficultyMatch || !powSaltMatch || !dataLinkMatch) {
+    return Promise.resolve(null);
+  }
+
+  const challenge = powChallengeMatch[1];
+  const difficulty = parseInt(powDifficultyMatch[1], 10);
+  const salt = powSaltMatch[1];
+  let dataLink = [];
+  try {
+    dataLink = JSON.parse(dataLinkMatch[1]);
+  } catch {
+    return Promise.resolve(null);
+  }
+
+  if (difficulty > EMBED69_MAX_POW_DIFFICULTY) {
+    console.warn(`Cinecalidad: refusing embed69 proof-of-work at difficulty ${difficulty} (max ${EMBED69_MAX_POW_DIFFICULTY} in this pure-JS sandbox).`);
+    return Promise.resolve(null);
+  }
+
+  return Promise.resolve(solveEmbed69ProofOfWork(challenge, difficulty)).then((nonce) => {
+    if (nonce === null || nonce === undefined) return null;
+
+    const aesKey = sha256RawBytes(challenge + nonce + salt);
+    const decryptedLinks = [];
+
+    function decryptEmbedLink(embed, kind) {
+      if (!embed.link || (kind === 'video' && embed.type !== 'video')) return;
+      try {
+        const raw = base64ToBytes(embed.link);
+        const iv = raw.slice(0, 16);
+        const ciphertext = raw.slice(16);
+        if (ciphertext.length === 0 || ciphertext.length % 16 !== 0) return;
+        const decrypted = stripPkcs7PaddingBytes(aes256CbcDecrypt(aesKey, iv, ciphertext));
+        decryptedLinks.push({ server: embed.servername, url: bytesToUtf8String(decrypted), kind });
+      } catch {
+        // ignore
+      }
+    }
+
+    for (const file of dataLink) {
+      if (Array.isArray(file.sortedEmbeds)) {
+        for (const embed of file.sortedEmbeds) decryptEmbedLink(embed, 'video');
+      }
+      if (Array.isArray(file.downloadEmbeds)) {
+        for (const embed of file.downloadEmbeds) decryptEmbedLink(embed, 'download');
+      }
+    }
+    return decryptedLinks;
+  });
 }
 function isFilemoonHost(value) {
   return /(^|\.)filemoon\.(?:sx|to|in|nl|wt|eu|art)$/i.test(getHostname(value))
@@ -1166,19 +1529,35 @@ function resolveFromPage(url, html, res, userAgent, referer, depth, visited, sig
 
   chain = chain.then((result) => {
     if (result) return result;
-    if (url.includes('embed69') || (html.includes('POW_CHALLENGE') && html.includes('dataLink'))) {
-      // AES-gated; see decryptEmbed69 stub above.
-      const embed69Links = decryptEmbed69(html);
-      if (embed69Links && embed69Links.length > 0) {
-        const attemptedEmbeds = embed69Links
-          .filter((embed) => !isFileLockerServer(embed.server))
-          .slice(0, MAX_EMBED69_ATTEMPTS);
-        return firstResultInOrder(attemptedEmbeds, EMBED_RESOLVE_CONCURRENCY, (embed) =>
-          resolvePlayerStream(embed.url, userAgent, url, { depth: depth + 1, visited, signal })
-        );
-      }
+    if (!(url.includes('embed69') || (html.includes('POW_CHALLENGE') && html.includes('dataLink')))) {
+      return null;
     }
-    return null;
+    return decryptEmbed69(html).then((embed69Links) => {
+      if (!embed69Links || embed69Links.length === 0) return null;
+
+      // Video-kind embeds before download-only ones, and within each,
+      // servers this resolver can actually answer before ones gated by a
+      // captcha or challenge nothing here can solve (filemoon, voe, dood).
+      const rankedEmbeds = embed69Links.slice().sort((a, b) => {
+        const kindScore = (value) => (value.kind === 'video' ? 0 : 1);
+        const serverScore = (value) => {
+          const server = (value.server || '').toLowerCase();
+          if (server === 'vidhide' || server === 'streamwish' || server === 'hlswish') return 0;
+          if (server === 'rapidvideo') return 1;
+          if (server === 'filemoon' || server === 'voe' || server === 'dood'
+            || server === 'doodstream' || server === 'doodstreaming' || server === 'playmogo') return 8;
+          return 2;
+        };
+        return kindScore(a) - kindScore(b) || serverScore(a) - serverScore(b);
+      });
+
+      const attemptedEmbeds = rankedEmbeds
+        .filter((embed) => !isFileLockerServer(embed.server))
+        .slice(0, MAX_EMBED69_ATTEMPTS);
+      return firstResultInOrder(attemptedEmbeds, EMBED_RESOLVE_CONCURRENCY, (embed) =>
+        resolvePlayerStream(embed.url, userAgent, url, { depth: depth + 1, visited, signal })
+      );
+    });
   });
 
   chain = chain.then((result) => {
@@ -1466,15 +1845,22 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
 
       $('a').each((i, el) => {
         const href = $(el).attr('href') || '';
-        const text = $(el).text().trim();
         const titleAttr = $(el).attr('title') || '';
+        // Card layouts (e.g. search results) wrap the clean title in
+        // `.in_title` alongside a synopsis paragraph; `$(el).text()` mashes
+        // both together (e.g. "Barbie" + its whole synopsis), which broke
+        // title matching -- a short target title matched as a substring of
+        // any unrelated card whose synopsis happened to contain it. Prefer
+        // the dedicated title element when present.
+        const inTitleText = $(el).find('.in_title').first().text().trim();
+        const text = $(el).text().trim();
 
         const isMovieLink = href.includes('/ver-pelicula/') || href.includes('/pelicula/');
         const isSeriesLink = href.includes('/ver-serie/') || href.includes('/serie/');
 
         if (isMovieLink || isSeriesLink) {
           if ((type === 'movie' && isMovieLink) || (type === 'series' && isSeriesLink)) {
-            const fullTitle = titleAttr || text;
+            const fullTitle = inTitleText || titleAttr || text;
             if (fullTitle) {
               results.push({ url: href, title: fullTitle });
             }
@@ -1505,9 +1891,9 @@ function scrape(title, originalTitle, year, type, season, episode, options = {})
         const cleanResultTitle = cleanText(r.title);
         const slug = extractSeriesSlug(r.url) || '';
         const cleanSlug = cleanText(slug.replace(/-/g, ' '));
-        const matchesTitle = cleanTargetTitle && (cleanResultTitle.includes(cleanTargetTitle) || cleanTargetTitle.includes(cleanResultTitle));
-        const matchesOriginal = cleanOriginalTitle && (cleanResultTitle.includes(cleanOriginalTitle) || cleanOriginalTitle.includes(cleanResultTitle));
-        const matchesExtra = cleanExtraTitles.some((extra) => cleanResultTitle.includes(extra) || extra.includes(cleanResultTitle));
+        const matchesTitle = cleanTargetTitle && looseIncludes(cleanResultTitle, cleanTargetTitle);
+        const matchesOriginal = cleanOriginalTitle && looseIncludes(cleanResultTitle, cleanOriginalTitle);
+        const matchesExtra = cleanExtraTitles.some((extra) => looseIncludes(cleanResultTitle, extra));
         const cleanSlugMatchesExtra = cleanExtraTitles.includes(cleanSlug);
 
         if (matchesTitle || matchesOriginal || matchesExtra || cleanSlug === cleanTargetTitle || cleanSlug === cleanOriginalTitle || cleanSlugMatchesExtra) {
@@ -1728,14 +2114,15 @@ function toNuvioStream(internalStream, mediaTitle) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === 'tv' ? 'series' : 'movie';
 
-  return fetchTmdbDetails(tmdbId, mediaType)
-    .then((details) => {
+  // TMDB details and its translations are independent lookups; fetching
+  // them serially cost a full extra round trip before the scrape could even
+  // start.
+  return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)])
+    .then(([details, extraTitles]) => {
       if (!details || !details.title) return [];
 
-      return getAlternativeTitles(mediaType, tmdbId).then((extraTitles) =>
-        scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
-          (results || []).map((stream) => toNuvioStream(stream, details.title))
-        )
+      return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then((results) =>
+        (results || []).map((stream) => toNuvioStream(stream, details.title))
       );
     })
     .catch((error) => {

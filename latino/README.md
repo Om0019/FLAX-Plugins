@@ -37,24 +37,27 @@ reimplemented in the single file `providers/sololatino.js`, using Promise
 chains instead of async/await and hand-written base64 helpers instead of
 `Buffer`.
 
-**embed69 is implemented, from scratch, in pure JS.** `src/unpacker.js`
-decrypts embed69's player links with AES-256-CBC, keyed by a SHA-256
-proof-of-work — real cryptographic primitives that need `crypto`, which this
-sandbox doesn't have (and `node-forge`-style libraries fail here too, since
-they still assume a Node/browser environment). `providers/sololatino.js`
-implements both SHA-256 and AES-256 decrypt from their definitions — the AES
-S-box is generated from its algebraic definition (GF(2^8) multiplicative
-inverse + the standard affine map) rather than transcribed from a 256-entry
-table — and verified against Node's own `crypto` before being wired in:
-SHA-256 against empty/short/long/unicode input and 200 randomized strings;
-AES-256-CBC against 100 randomized encrypt-with-Node/decrypt-with-this
-round-trips, plus the exact `IV‖ciphertext`/base64 shape embed69 uses,
-end-to-end through a synthetic embed69 page. The proof-of-work search runs
-in chunks, yielding via a microtask hop between them so it doesn't fully
-monopolise the JS thread, and is capped (difficulty 5, 8s) rather than
-attempted unbounded — the cap is lower than the original addon's, since a
-pure-JS hash is measured at roughly a third of native `crypto`'s throughput
-in this environment.
+**embed69 is implemented, from scratch, in pure JS, in every one of these
+providers** (each file inlines its own copy, since nothing here can
+`require('../unpacker')` across files): it decrypts embed69's player links
+with AES-256-CBC, keyed by a SHA-256 proof-of-work — real cryptographic
+primitives that need `crypto`, which this sandbox doesn't have (and
+`node-forge`-style libraries fail here too, since they still assume a
+Node/browser environment). Each provider implements both SHA-256 and AES-256
+decrypt from their definitions — the AES S-box is generated from its
+algebraic definition (GF(2^8) multiplicative inverse + the standard affine
+map) rather than transcribed from a 256-entry table — and verified against
+Node's own `crypto` before being wired in: SHA-256 against empty/short/long/
+unicode input and 200 randomized strings; AES-256-CBC against 100 randomized
+encrypt-with-Node/decrypt-with-this round-trips, plus the exact
+`IV‖ciphertext`/base64 shape embed69 uses, end-to-end through a synthetic
+embed69 page. The proof-of-work search runs in chunks, yielding via a
+microtask hop between them so it doesn't fully monopolise the JS thread, and
+is capped (difficulty 5, 8s) rather than attempted unbounded — the cap is
+lower than the original addon's, since a pure-JS hash is measured at roughly
+a third of native `crypto`'s throughput in this environment. PelisPedia in
+particular relies on embed69 for effectively all of its links, so this isn't
+optional there the way it is for the other sources.
 
 Filemoon (AES-GCM, and per the original code's own findings gated behind a
 captcha on nearly every file anyway) and the Pelisplus mirrors (a different

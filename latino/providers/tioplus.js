@@ -1,7 +1,3 @@
-// Built from src/providers/tioplus.js for the restricted runtime Nuvio's local-scraper
-// sandbox provides -- do not hand-edit. Regenerate with:
-//   npx esbuild@0.28.1 --target=es2016 --format=cjs --platform=neutral src/providers/tioplus.js > latino/providers/tioplus.js
-// Edit src/providers/tioplus.js instead, then rebuild.
 var __defProp = Object.defineProperty;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
@@ -306,6 +302,14 @@ function raceTitleSearches(titles, search) {
 }
 function cleanText(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+}
+function looseIncludes(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+  return shorter.length / longer.length >= 0.5;
 }
 function extractCandidateYears(...values) {
   const years = /* @__PURE__ */ new Set();
@@ -773,8 +777,349 @@ function resolveFilemoon() {
 function resolvePelisplus() {
   return Promise.resolve(null);
 }
-function decryptEmbed69() {
-  return null;
+const SHA256_K = [
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+];
+function rotr32(x, n) {
+  return (x >>> n | x << 32 - n) >>> 0;
+}
+function stringToUtf8Bytes(str) {
+  const bytes = [];
+  for (let i = 0; i < str.length; i += 1) {
+    let code = str.charCodeAt(i);
+    if (code >= 55296 && code <= 56319 && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 56320 && next <= 57343) {
+        code = 65536 + (code - 55296 << 10) + (next - 56320);
+        i += 1;
+      }
+    }
+    if (code < 128) {
+      bytes.push(code);
+    } else if (code < 2048) {
+      bytes.push(192 | code >> 6, 128 | code & 63);
+    } else if (code < 65536) {
+      bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
+    } else {
+      bytes.push(
+        240 | code >> 18,
+        128 | code >> 12 & 63,
+        128 | code >> 6 & 63,
+        128 | code & 63
+      );
+    }
+  }
+  return bytes;
+}
+function sha256Words(bytes) {
+  let h0 = 1779033703, h1 = 3144134277, h2 = 1013904242, h3 = 2773480762;
+  let h4 = 1359893119, h5 = 2600822924, h6 = 528734635, h7 = 1541459225;
+  const bitLenLow = bytes.length * 8 >>> 0;
+  const msg = bytes.slice();
+  msg.push(128);
+  while (msg.length % 64 !== 56) msg.push(0);
+  msg.push(0, 0, 0, 0);
+  msg.push(bitLenLow >>> 24 & 255, bitLenLow >>> 16 & 255, bitLenLow >>> 8 & 255, bitLenLow & 255);
+  const w = new Array(64);
+  for (let chunkStart = 0; chunkStart < msg.length; chunkStart += 64) {
+    for (let i = 0; i < 16; i += 1) {
+      const o = chunkStart + i * 4;
+      w[i] = (msg[o] << 24 | msg[o + 1] << 16 | msg[o + 2] << 8 | msg[o + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ w[i - 15] >>> 3;
+      const s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ w[i - 2] >>> 10;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i += 1) {
+      const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+      const ch = e & f ^ ~e & g;
+      const temp1 = h + S1 + ch + SHA256_K[i] + w[i] >>> 0;
+      const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+      const maj = a & b ^ a & c ^ b & c;
+      const temp2 = S0 + maj >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = d + temp1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = temp1 + temp2 >>> 0;
+    }
+    h0 = h0 + a >>> 0;
+    h1 = h1 + b >>> 0;
+    h2 = h2 + c >>> 0;
+    h3 = h3 + d >>> 0;
+    h4 = h4 + e >>> 0;
+    h5 = h5 + f >>> 0;
+    h6 = h6 + g >>> 0;
+    h7 = h7 + h >>> 0;
+  }
+  return [h0, h1, h2, h3, h4, h5, h6, h7];
+}
+function sha256Hex(str) {
+  return sha256Words(stringToUtf8Bytes(str)).map((word) => (word >>> 0).toString(16).padStart(8, "0")).join("");
+}
+function sha256RawBytes(str) {
+  const words = sha256Words(stringToUtf8Bytes(str));
+  const bytes = [];
+  for (const word of words) {
+    bytes.push(word >>> 24 & 255, word >>> 16 & 255, word >>> 8 & 255, word & 255);
+  }
+  return bytes;
+}
+function gmul(a, b) {
+  let p = 0;
+  let x = a;
+  let y = b;
+  for (let i = 0; i < 8; i += 1) {
+    if (y & 1) p ^= x;
+    const hiBitSet = x & 128;
+    x = x << 1 & 255;
+    if (hiBitSet) x ^= 27;
+    y >>= 1;
+  }
+  return p;
+}
+function buildAesTables() {
+  const inv = new Array(256).fill(0);
+  for (let a = 1; a < 256; a += 1) {
+    for (let b = 1; b < 256; b += 1) {
+      if (gmul(a, b) === 1) {
+        inv[a] = b;
+        break;
+      }
+    }
+  }
+  const rotl8 = (v, n) => (v << n | v >>> 8 - n) & 255;
+  const sbox = new Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    const x = inv[i];
+    sbox[i] = x ^ rotl8(x, 1) ^ rotl8(x, 2) ^ rotl8(x, 3) ^ rotl8(x, 4) ^ 99;
+  }
+  const invSbox = new Array(256);
+  for (let i = 0; i < 256; i += 1) invSbox[sbox[i]] = i;
+  return { sbox, invSbox };
+}
+const AES_TABLES = buildAesTables();
+const AES_SBOX = AES_TABLES.sbox;
+const AES_INV_SBOX = AES_TABLES.invSbox;
+const AES_RCON = [1, 2, 4, 8, 16, 32, 64, 128, 27, 54, 108, 216, 171, 77];
+function aes256KeyExpansion(key) {
+  const Nk = 8, Nr = 14, Nb = 4;
+  const w = [];
+  for (let i = 0; i < Nk; i += 1) {
+    w.push([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+  }
+  for (let i = Nk; i < Nb * (Nr + 1); i += 1) {
+    let temp = w[i - 1].slice();
+    if (i % Nk === 0) {
+      temp = [temp[1], temp[2], temp[3], temp[0]];
+      temp = temp.map((b) => AES_SBOX[b]);
+      temp[0] ^= AES_RCON[i / Nk - 1];
+    } else if (Nk > 6 && i % Nk === 4) {
+      temp = temp.map((b) => AES_SBOX[b]);
+    }
+    w.push(w[i - Nk].map((b, idx) => b ^ temp[idx]));
+  }
+  return w;
+}
+function addRoundKey(state, w, round) {
+  for (let c = 0; c < 4; c += 1) {
+    for (let r = 0; r < 4; r += 1) {
+      state[r][c] ^= w[round * 4 + c][r];
+    }
+  }
+}
+function invSubBytes(state) {
+  for (let r = 0; r < 4; r += 1) {
+    for (let c = 0; c < 4; c += 1) {
+      state[r][c] = AES_INV_SBOX[state[r][c]];
+    }
+  }
+}
+function invShiftRows(state) {
+  for (let r = 1; r < 4; r += 1) {
+    const row = state[r];
+    state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r));
+  }
+}
+function invMixColumns(state) {
+  for (let c = 0; c < 4; c += 1) {
+    const a0 = state[0][c], a1 = state[1][c], a2 = state[2][c], a3 = state[3][c];
+    state[0][c] = gmul(a0, 14) ^ gmul(a1, 11) ^ gmul(a2, 13) ^ gmul(a3, 9);
+    state[1][c] = gmul(a0, 9) ^ gmul(a1, 14) ^ gmul(a2, 11) ^ gmul(a3, 13);
+    state[2][c] = gmul(a0, 13) ^ gmul(a1, 9) ^ gmul(a2, 14) ^ gmul(a3, 11);
+    state[3][c] = gmul(a0, 11) ^ gmul(a1, 13) ^ gmul(a2, 9) ^ gmul(a3, 14);
+  }
+}
+function aes256DecryptBlock(block, w) {
+  const Nr = 14;
+  const state = [[], [], [], []];
+  for (let i = 0; i < 16; i += 1) state[i % 4][i / 4 | 0] = block[i];
+  addRoundKey(state, w, Nr);
+  for (let round = Nr - 1; round >= 1; round -= 1) {
+    invShiftRows(state);
+    invSubBytes(state);
+    addRoundKey(state, w, round);
+    invMixColumns(state);
+  }
+  invShiftRows(state);
+  invSubBytes(state);
+  addRoundKey(state, w, 0);
+  const out = new Array(16);
+  for (let i = 0; i < 16; i += 1) out[i] = state[i % 4][i / 4 | 0];
+  return out;
+}
+function aes256CbcDecrypt(keyBytes, ivBytes, ciphertextBytes) {
+  const w = aes256KeyExpansion(keyBytes);
+  const plaintext = [];
+  let prevBlock = ivBytes;
+  for (let offset = 0; offset < ciphertextBytes.length; offset += 16) {
+    const block = ciphertextBytes.slice(offset, offset + 16);
+    const decrypted = aes256DecryptBlock(block, w);
+    for (let i = 0; i < 16; i += 1) plaintext.push(decrypted[i] ^ prevBlock[i]);
+    prevBlock = block;
+  }
+  return plaintext;
+}
+function stripPkcs7PaddingBytes(bytes) {
+  const pad = bytes[bytes.length - 1];
+  if (!Number.isInteger(pad) || pad < 1 || pad > 16 || pad > bytes.length) return bytes;
+  return bytes.slice(0, bytes.length - pad);
+}
+const EMBED69_MAX_POW_DIFFICULTY = 5;
+const EMBED69_MAX_POW_MS = 8e3;
+const EMBED69_POW_CHUNK = 4e3;
+function solveEmbed69ProofOfWork(challenge, difficulty) {
+  const prefix = "0".repeat(difficulty);
+  const deadline = Date.now() + EMBED69_MAX_POW_MS;
+  let nonce = 0;
+  function step() {
+    const chunkEnd = nonce + EMBED69_POW_CHUNK;
+    for (; nonce < chunkEnd; nonce += 1) {
+      if (sha256Hex(challenge + nonce).startsWith(prefix)) return nonce;
+    }
+    if (Date.now() > deadline) {
+      console.warn(`TioPlus: embed69 proof-of-work (difficulty ${difficulty}) exceeded ${EMBED69_MAX_POW_MS}ms after ${nonce} nonces; giving up.`);
+      return null;
+    }
+    return Promise.resolve().then(step);
+  }
+  return Promise.resolve().then(step);
+}
+function decryptEmbed69(html) {
+  const powChallengeMatch = html.match(/const POW_CHALLENGE = '([^']+)';/);
+  const powDifficultyMatch = html.match(/const POW_DIFFICULTY = (\d+);/);
+  const powSaltMatch = html.match(/const POW_SALT = '([^']+)';/);
+  const dataLinkMatch = html.match(/let dataLink = (\[.*?\]);/);
+  if (!powChallengeMatch || !powDifficultyMatch || !powSaltMatch || !dataLinkMatch) {
+    return Promise.resolve(null);
+  }
+  const challenge = powChallengeMatch[1];
+  const difficulty = parseInt(powDifficultyMatch[1], 10);
+  const salt = powSaltMatch[1];
+  let dataLink = [];
+  try {
+    dataLink = JSON.parse(dataLinkMatch[1]);
+  } catch (e) {
+    return Promise.resolve(null);
+  }
+  if (difficulty > EMBED69_MAX_POW_DIFFICULTY) {
+    console.warn(`TioPlus: refusing embed69 proof-of-work at difficulty ${difficulty} (max ${EMBED69_MAX_POW_DIFFICULTY} in this pure-JS sandbox).`);
+    return Promise.resolve(null);
+  }
+  return Promise.resolve(solveEmbed69ProofOfWork(challenge, difficulty)).then((nonce) => {
+    if (nonce === null || nonce === void 0) return null;
+    const aesKey = sha256RawBytes(challenge + nonce + salt);
+    const decryptedLinks = [];
+    function decryptEmbedLink(embed, kind) {
+      if (!embed.link || kind === "video" && embed.type !== "video") return;
+      try {
+        const raw = base64ToBytes(embed.link);
+        const iv = raw.slice(0, 16);
+        const ciphertext = raw.slice(16);
+        if (ciphertext.length === 0 || ciphertext.length % 16 !== 0) return;
+        const decrypted = stripPkcs7PaddingBytes(aes256CbcDecrypt(aesKey, iv, ciphertext));
+        decryptedLinks.push({ server: embed.servername, url: bytesToUtf8String(decrypted), kind });
+      } catch (e) {
+      }
+    }
+    for (const file of dataLink) {
+      if (Array.isArray(file.sortedEmbeds)) {
+        for (const embed of file.sortedEmbeds) decryptEmbedLink(embed, "video");
+      }
+      if (Array.isArray(file.downloadEmbeds)) {
+        for (const embed of file.downloadEmbeds) decryptEmbedLink(embed, "download");
+      }
+    }
+    return decryptedLinks;
+  });
 }
 function isFilemoonHost(value) {
   return /(^|\.)filemoon\.(?:sx|to|in|nl|wt|eu|art)$/i.test(getHostname(value)) || /(^|\.)bysejikuar\.com$/i.test(getHostname(value)) || /(^|\.)q8y5z\.com$/i.test(getHostname(value));
@@ -883,18 +1228,29 @@ function resolveFromPage(url, html, res, userAgent, referer, depth, visited, sig
   chain = chain.then((result) => result ? result : resolveDood(html, url, userAgent, signal, res.url || url));
   chain = chain.then((result) => {
     if (result) return result;
-    if (url.includes("embed69") || html.includes("POW_CHALLENGE") && html.includes("dataLink")) {
-      const embed69Links = decryptEmbed69(html);
-      if (embed69Links && embed69Links.length > 0) {
-        const attemptedEmbeds = embed69Links.filter((embed) => !isFileLockerServer(embed.server)).slice(0, MAX_EMBED69_ATTEMPTS);
-        return firstResultInOrder(
-          attemptedEmbeds,
-          EMBED_RESOLVE_CONCURRENCY,
-          (embed) => resolvePlayerStream(embed.url, userAgent, url, { depth: depth + 1, visited, signal })
-        );
-      }
+    if (!(url.includes("embed69") || html.includes("POW_CHALLENGE") && html.includes("dataLink"))) {
+      return null;
     }
-    return null;
+    return decryptEmbed69(html).then((embed69Links) => {
+      if (!embed69Links || embed69Links.length === 0) return null;
+      const rankedEmbeds = embed69Links.slice().sort((a, b) => {
+        const kindScore = (value) => value.kind === "video" ? 0 : 1;
+        const serverScore = (value) => {
+          const server = (value.server || "").toLowerCase();
+          if (server === "vidhide" || server === "streamwish" || server === "hlswish") return 0;
+          if (server === "rapidvideo") return 1;
+          if (server === "filemoon" || server === "voe" || server === "dood" || server === "doodstream" || server === "doodstreaming" || server === "playmogo") return 8;
+          return 2;
+        };
+        return kindScore(a) - kindScore(b) || serverScore(a) - serverScore(b);
+      });
+      const attemptedEmbeds = rankedEmbeds.filter((embed) => !isFileLockerServer(embed.server)).slice(0, MAX_EMBED69_ATTEMPTS);
+      return firstResultInOrder(
+        attemptedEmbeds,
+        EMBED_RESOLVE_CONCURRENCY,
+        (embed) => resolvePlayerStream(embed.url, userAgent, url, { depth: depth + 1, visited, signal })
+      );
+    });
   });
   chain = chain.then((result) => {
     if (result) return result;
@@ -1033,14 +1389,14 @@ function scoreCandidate(result, targetTitle, originalTargetTitle, year, extraTit
       return 0;
     }
   }
-  if (cleanTargetTitle && (cleanResultTitle.includes(cleanTargetTitle) || cleanTargetTitle.includes(cleanResultTitle))) {
+  if (cleanTargetTitle && looseIncludes(cleanResultTitle, cleanTargetTitle)) {
     score += 3;
   }
-  if (cleanOriginalTitle && (cleanResultTitle.includes(cleanOriginalTitle) || cleanOriginalTitle.includes(cleanResultTitle))) {
+  if (cleanOriginalTitle && looseIncludes(cleanResultTitle, cleanOriginalTitle)) {
     score += 2;
   }
   for (const cleanExtra of cleanExtraTitles) {
-    if (cleanResultTitle.includes(cleanExtra) || cleanExtra.includes(cleanResultTitle)) score += 2;
+    if (looseIncludes(cleanResultTitle, cleanExtra)) score += 2;
   }
   if (cleanSlug && (cleanSlug === cleanTargetTitle || cleanSlug === cleanOriginalTitle || cleanExtraTitles.includes(cleanSlug))) {
     score += 4;
@@ -1335,12 +1691,10 @@ function toNuvioStream(internalStream, mediaTitle) {
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   const type = mediaType === "tv" ? "series" : "movie";
-  return fetchTmdbDetails(tmdbId, mediaType).then((details) => {
+  return Promise.all([fetchTmdbDetails(tmdbId, mediaType), getAlternativeTitles(mediaType, tmdbId)]).then(([details, extraTitles]) => {
     if (!details || !details.title) return [];
-    return getAlternativeTitles(mediaType, tmdbId).then(
-      (extraTitles) => scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
-        (results) => (results || []).map((stream) => toNuvioStream(stream, details.title))
-      )
+    return scrape(details.title, details.originalTitle, details.year, type, seasonNum, episodeNum, { extraTitles }).then(
+      (results) => (results || []).map((stream) => toNuvioStream(stream, details.title))
     );
   }).catch((error) => {
     console.error("TioPlus (Nuvio): getStreams failed:", error && error.message);
