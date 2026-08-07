@@ -1,0 +1,258 @@
+{
+  "name": "English Nuvio Providers",
+  "version": "1.0.24",
+  "scrapers": [
+    {
+      "id": "AIOStreams",
+      "name": "AIOStreams",
+      "description": "Debrid-backed torrent streams from a configured AIOStreams instance, resolved from tmdbId via a TMDB external_ids lookup (AIOStreams itself is keyed on IMDb id). Replaces Torrentio, which this used to run. Authenticates with a UUID/password baked into providers/aiostreams.js. Retries once on a transient failure or empty result. Uses no timers and no AbortController: Nuvio's sandbox defines neither setTimeout nor a fetch that honours an AbortSignal, and getStreams swallowed the resulting throw into an empty result. Request deadlines are skipped where timers are unavailable. Listed first in this manifest so it's the first provider's results Nuvio shows when it resolves; each returned link is now probed for playability before being returned, cached (instantly playable) links are sorted ahead of uncached ones, and the list is capped at 2.",
+      "version": "1.0.19",
+      "author": "Ported from the English Stremio addon's aiostreams.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/aiostreams.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "VidEasy",
+      "name": "VidEasy",
+      "description": "English movies and series scraped from videasy. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/videasy.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "Peachify",
+      "name": "Peachify",
+      "description": "English movies and series scraped from Peachify. Patched to cut its per-server timeout from 15s to 6s so its three responsive mirrors make it back inside a normal request budget. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/peachify.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "StreamFlix",
+      "name": "StreamFlix",
+      "description": "English movies and series scraped from StreamFlix. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/streamflix.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "AllWish",
+      "name": "All-Wish",
+      "description": "English movies and series scraped from All-Wish. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/allwish.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "Castle",
+      "name": "Castle",
+      "description": "English movies and series scraped from Castle. Patched to require a strict (75% token-coverage) title match instead of a loose substring match that accepted wrong titles, and to allow single-word titles (that check previously rejected every 1-word title outright, e.g. Inception, Barbie). Also carries a pure-JS AES-CBC decrypt so it no longer crashes on Nuvio's missing crypto-js. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/castle.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "4KHDHub",
+      "name": "4KHDHub",
+      "description": "English movies and series scraped from 4KHDHub. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/4khdhubnew.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "HDHub4u",
+      "name": "HDHub4u",
+      "description": "English/Hindi movies and series scraped from HDHub4u. Patched so its first-result fallback only fires when the candidate covers 75% of the query's title tokens, fixing wrong-title matches like \"P.S. I Love You\" for \"I Love You Phillip Morris\". Also carries a pure-JS AES-CBC decrypt so it no longer crashes on Nuvio's missing crypto-js (used by one of its extractors). Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/hdhub4u.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "UHDMovies",
+      "name": "UHDMovies",
+      "description": "English movies and series scraped from UHDMovies. Each returned link is now probed for playability before being returned, and the list is capped at 2, sorted by known resolution first.",
+      "version": "1.0.14",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/uhdmovies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "VidLink",
+      "name": "VidLink",
+      "description": "Disabled: its API marks every quality requiresProxy and hands out a raw CDN URL that the CDN itself refuses (426) regardless of headers, even after reproducing its player bundle's proxy-URL construction exactly \u2014 a further session/cookie/IP gate blocks it beyond that. Verified in the source English Stremio addon (0 streams on repeated tests).",
+      "version": "1.0.1",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vidlink.js",
+      "enabled": false,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "VidFast",
+      "name": "VidFast",
+      "description": "Disabled: aborts every call with \"Incomplete decryption config\" \u2014 its embedded key material is stale. Verified 0 streams on repeated tests in the source English Stremio addon.",
+      "version": "1.0.1",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vidfast.js",
+      "enabled": false,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "VidSrc",
+      "name": "VidSrc",
+      "description": "Disabled: resolves its RCP server but then scrapes 0 streams. Verified 0 streams on repeated tests in the source English Stremio addon.",
+      "version": "1.0.1",
+      "author": "Vendored from All-in-One-Nuvio, via the English Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vidsrc.js",
+      "enabled": false,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en"
+      ]
+    }
+  ]
+}

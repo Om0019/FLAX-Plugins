@@ -1,0 +1,213 @@
+{
+  "name": "Latino Nuvio Providers",
+  "version": "1.0.26",
+  "scrapers": [
+    {
+      "id": "SoloLatino",
+      "name": "SoloLatino",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from sololatino.net. embed69 links (its main working source) now resolve: implements AES-256-CBC decrypt and the SHA-256 proof-of-work it requires from scratch, since Nuvio's sandbox has no crypto module. Temporarily reports a single non-playable \"\u26a0\ufe0f SoloLatino diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.25",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/sololatino.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "Cuevana3i",
+      "name": "Cuevana3i",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from cuevana3i.you. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cuevana3i.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "Cinecalidad",
+      "name": "Cinecalidad",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from cinecalidad.am. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cinecalidad.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "CineHDPlus",
+      "name": "CineHDPlus",
+      "description": "Disabled: cinehdplus.org sits behind a Cloudflare managed challenge that no fetch-based scraper can clear. Kept only as a probe; always returns no streams.",
+      "version": "1.0.3",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cinehdplus.js",
+      "enabled": false,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "TioPlus",
+      "name": "TioPlus",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from tioplus.app. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/tioplus.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "LaMovie",
+      "name": "LaMovie",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from lamovie.org. Temporarily reports a single non-playable \"\u26a0\ufe0f LaMovie diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.22",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/lamovie.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "PelisPedia",
+      "name": "PelisPedia",
+      "description": "Spanish-dubbed/subtitled movies and series scraped from pelispedia.mov. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/pelispedia.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "TLNovelas",
+      "name": "TLNovelas",
+      "description": "Spanish-dubbed telenovelas scraped from ww2.tlnovelas.net (series only). Temporarily reports a single non-playable \"\u26a0\ufe0f TLNovelas diag\" entry instead of an empty list when it finds nothing, showing which stage (TMDB lookup, search, unpack, probe) came up empty -- remove once the on-device zero-results reports are diagnosed. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.21",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "tv"
+      ],
+      "filename": "providers/tlnovelas.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "Novelas360",
+      "name": "Novelas360",
+      "description": "Spanish-dubbed telenovelas scraped from novelas360.com (series only). As of this port its sole player host (novelas360.cyou) needs a signed AJAX handshake this scraper can't complete, so it currently finds episodes but rarely resolves a playable stream. Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "tv"
+      ],
+      "filename": "providers/novelas360.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "Ennovelas",
+      "name": "Ennovelas",
+      "description": "Spanish-dubbed telenovelas scraped from l.ennovelas-tv.com (series only). Card subtitle now falls back to the embed server's own name (e.g. \"Voe\", \"Streamtape\") when no real resolution is known, instead of staying blank, and the list is capped at 2, known resolutions sorted first.",
+      "version": "1.0.14",
+      "author": "Ported from the Latino Stremio addon",
+      "supportedTypes": [
+        "tv"
+      ],
+      "filename": "providers/ennovelas.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "es"
+      ]
+    }
+  ]
+}

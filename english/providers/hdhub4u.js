@@ -1,0 +1,643 @@
+/**
+ * Pure-JS crypto-js shim -- Nuvio's sandbox has no npm module resolution, so
+ * require("crypto-js") crashes here (confirmed via the sandbox harness at
+ * tools/run-in-sandbox.js: it throws at module-load time, before getStreams
+ * is even defined, so the provider never registers). This block
+ * re-implements the exact subset of the crypto-js API this file calls --
+ * AES-CBC decrypt with PKCS7 padding, plus the Base64/Utf8/Hex WordArray
+ * helpers -- verified against the real crypto-js package for randomized
+ * round-trips (including this file's own key-derivation shape) before being
+ * wired in, and shadows require() so the rest of this file's existing
+ * require("crypto-js") call transparently receives this instead. Same AES
+ * construction as latino/src/providers/sololatino.js's embed69 decryptor,
+ * generalized to also support AES-128 (the key size these providers use).
+ */
+(function () {
+  "use strict";
+
+  const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+  function base64ToBytes(b64) {
+    const clean = String(b64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+    const bytes = [];
+    let buffer = 0, bits = 0;
+    for (let i = 0; i < clean.length; i += 1) {
+      const c = clean[i];
+      if (c === '=') break;
+      const val = BASE64_CHARS.indexOf(c);
+      if (val === -1) continue;
+      buffer = (buffer << 6) | val;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes.push((buffer >> bits) & 0xff);
+      }
+    }
+    return bytes;
+  }
+
+  function hexToBytes(hex) {
+    const clean = String(hex || '').replace(/[^0-9a-fA-F]/g, '');
+    const bytes = [];
+    for (let i = 0; i + 1 < clean.length; i += 2) bytes.push(parseInt(clean.substr(i, 2), 16));
+    return bytes;
+  }
+
+  function bytesToHex(bytes) {
+    return bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function stringToUtf8Bytes(str) {
+    const bytes = [];
+    for (let i = 0; i < str.length; i += 1) {
+      let code = str.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+        const next = str.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+          i += 1;
+        }
+      }
+      if (code < 0x80) {
+        bytes.push(code);
+      } else if (code < 0x800) {
+        bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      } else if (code < 0x10000) {
+        bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      } else {
+        bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      }
+    }
+    return bytes;
+  }
+
+  function bytesToUtf8String(bytes) {
+    let out = '';
+    let i = 0;
+    while (i < bytes.length) {
+      const b0 = bytes[i++];
+      if (b0 < 0x80) {
+        out += String.fromCharCode(b0);
+      } else if (b0 >= 0xc0 && b0 < 0xe0 && i < bytes.length) {
+        const b1 = bytes[i++];
+        out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
+      } else if (b0 >= 0xe0 && b0 < 0xf0 && i + 1 < bytes.length) {
+        const b1 = bytes[i++], b2 = bytes[i++];
+        out += String.fromCharCode(((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f));
+      } else if (b0 >= 0xf0 && i + 2 < bytes.length) {
+        const b1 = bytes[i++], b2 = bytes[i++], b3 = bytes[i++];
+        let codepoint = ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+        codepoint -= 0x10000;
+        out += String.fromCharCode(0xd800 + (codepoint >> 10), 0xdc00 + (codepoint & 0x3ff));
+      } else {
+        out += String.fromCharCode(b0);
+      }
+    }
+    return out;
+  }
+
+  function gmul(a, b) {
+    let p = 0, x = a, y = b;
+    for (let i = 0; i < 8; i += 1) {
+      if (y & 1) p ^= x;
+      const hiBitSet = x & 0x80;
+      x = (x << 1) & 0xff;
+      if (hiBitSet) x ^= 0x1b;
+      y >>= 1;
+    }
+    return p;
+  }
+
+  function buildAesTables() {
+    const inv = new Array(256).fill(0);
+    for (let a = 1; a < 256; a += 1) {
+      for (let b = 1; b < 256; b += 1) {
+        if (gmul(a, b) === 1) { inv[a] = b; break; }
+      }
+    }
+    const rotl8 = (v, n) => ((v << n) | (v >>> (8 - n))) & 0xff;
+    const sbox = new Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      const x = inv[i];
+      sbox[i] = x ^ rotl8(x, 1) ^ rotl8(x, 2) ^ rotl8(x, 3) ^ rotl8(x, 4) ^ 0x63;
+    }
+    const invSbox = new Array(256);
+    for (let i = 0; i < 256; i += 1) invSbox[sbox[i]] = i;
+    return { sbox, invSbox };
+  }
+
+  const AES_TABLES = buildAesTables();
+  const AES_SBOX = AES_TABLES.sbox;
+  const AES_INV_SBOX = AES_TABLES.invSbox;
+  const AES_RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d];
+
+  /** Generalized AES key expansion: works for Nk=4/6/8 (AES-128/192/256). */
+  function aesKeyExpansion(key) {
+    const Nk = key.length / 4;
+    const Nr = Nk + 6;
+    const Nb = 4;
+    const w = [];
+    for (let i = 0; i < Nk; i += 1) w.push([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+    for (let i = Nk; i < Nb * (Nr + 1); i += 1) {
+      let temp = w[i - 1].slice();
+      if (i % Nk === 0) {
+        temp = [temp[1], temp[2], temp[3], temp[0]].map((b) => AES_SBOX[b]);
+        temp[0] ^= AES_RCON[i / Nk - 1];
+      } else if (Nk > 6 && i % Nk === 4) {
+        temp = temp.map((b) => AES_SBOX[b]);
+      }
+      w.push(w[i - Nk].map((b, idx) => b ^ temp[idx]));
+    }
+    return { w, Nr };
+  }
+
+  function addRoundKey(state, w, round) {
+    for (let c = 0; c < 4; c += 1) for (let r = 0; r < 4; r += 1) state[r][c] ^= w[round * 4 + c][r];
+  }
+  function invSubBytes(state) {
+    for (let r = 0; r < 4; r += 1) for (let c = 0; c < 4; c += 1) state[r][c] = AES_INV_SBOX[state[r][c]];
+  }
+  function invShiftRows(state) {
+    for (let r = 1; r < 4; r += 1) {
+      const row = state[r];
+      state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r));
+    }
+  }
+  function invMixColumns(state) {
+    for (let c = 0; c < 4; c += 1) {
+      const a0 = state[0][c], a1 = state[1][c], a2 = state[2][c], a3 = state[3][c];
+      state[0][c] = gmul(a0, 0x0e) ^ gmul(a1, 0x0b) ^ gmul(a2, 0x0d) ^ gmul(a3, 0x09);
+      state[1][c] = gmul(a0, 0x09) ^ gmul(a1, 0x0e) ^ gmul(a2, 0x0b) ^ gmul(a3, 0x0d);
+      state[2][c] = gmul(a0, 0x0d) ^ gmul(a1, 0x09) ^ gmul(a2, 0x0e) ^ gmul(a3, 0x0b);
+      state[3][c] = gmul(a0, 0x0b) ^ gmul(a1, 0x0d) ^ gmul(a2, 0x09) ^ gmul(a3, 0x0e);
+    }
+  }
+  function aesDecryptBlock(block, w, Nr) {
+    const state = [[], [], [], []];
+    for (let i = 0; i < 16; i += 1) state[i % 4][(i / 4) | 0] = block[i];
+    addRoundKey(state, w, Nr);
+    for (let round = Nr - 1; round >= 1; round -= 1) {
+      invShiftRows(state); invSubBytes(state); addRoundKey(state, w, round); invMixColumns(state);
+    }
+    invShiftRows(state); invSubBytes(state); addRoundKey(state, w, 0);
+    const out = new Array(16);
+    for (let i = 0; i < 16; i += 1) out[i] = state[i % 4][(i / 4) | 0];
+    return out;
+  }
+  function aesCbcDecrypt(keyBytes, ivBytes, ciphertextBytes) {
+    const { w, Nr } = aesKeyExpansion(keyBytes);
+    const plaintext = [];
+    let prevBlock = ivBytes;
+    for (let offset = 0; offset < ciphertextBytes.length; offset += 16) {
+      const block = ciphertextBytes.slice(offset, offset + 16);
+      const decrypted = aesDecryptBlock(block, w, Nr);
+      for (let i = 0; i < 16; i += 1) plaintext.push(decrypted[i] ^ prevBlock[i]);
+      prevBlock = block;
+    }
+    return plaintext;
+  }
+  /**
+   * castle.js's own key-derivation only ever produces a well-formed 16-byte
+   * key in practice (its >16 branch truncates, its ==16 branch is exact); this
+   * only guards the pathological <16-bytes-of-input case, which castle.js
+   * already treats as a decrypt failure via its own `if (!result) throw`
+   * check, so exact bit-parity with CryptoJS's undefined behaviour there
+   * isn't required -- just that this never throws.
+   */
+  function normalizeAesKeyBytes(bytes) {
+    if (bytes.length >= 32) return bytes.slice(0, 32);
+    if (bytes.length >= 24) return bytes.slice(0, 24);
+    const padded = bytes.slice(0, 16);
+    while (padded.length < 16) padded.push(0);
+    return padded;
+  }
+
+  function stripPkcs7PaddingBytes(bytes) {
+    const pad = bytes[bytes.length - 1];
+    if (!Number.isInteger(pad) || pad < 1 || pad > 16 || pad > bytes.length) return bytes;
+    return bytes.slice(0, bytes.length - pad);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Minimal CryptoJS-compatible shim: only WordArray/enc/AES.decrypt(CBC,Pkcs7),
+  // which is the entire surface castle.js and hdhub4u.js use.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mirrors CryptoJS's actual WordArray representation: `words` is an array of
+   * 32-bit big-endian words, and `create(words, sigBytes)` -- the same method
+   * castle.js calls directly -- treats its first argument as words, not bytes
+   * (sigBytes defaults to words.length*4 when omitted). Verified against the
+   * real crypto-js package's own `WordArray.create` behaviour.
+   */
+  function wordArrayFromWords(words, sigBytes) {
+    words = words ? words.slice() : [];
+    const wa = {
+      words,
+      sigBytes: sigBytes === undefined ? words.length * 4 : sigBytes,
+      toBytes() {
+        const out = [];
+        for (let i = 0; i < wa.sigBytes; i += 1) out.push((wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff);
+        return out;
+      },
+      concat(other) {
+        const combined = wa.toBytes().concat(other.toBytes());
+        return wordArrayFromBytes(combined);
+      },
+      toString(encoder) {
+        const bytes2 = wa.toBytes();
+        if (encoder === CryptoJSPolyfill.enc.Utf8) return bytesToUtf8String(bytes2);
+        return bytesToHex(bytes2);
+      }
+    };
+    return wa;
+  }
+
+  function wordArrayFromBytes(bytes) {
+    const words = [];
+    for (let i = 0; i < bytes.length; i += 4) {
+      words.push(((bytes[i] || 0) << 24) | ((bytes[i + 1] || 0) << 16) | ((bytes[i + 2] || 0) << 8) | (bytes[i + 3] || 0));
+    }
+    return wordArrayFromWords(words, bytes.length);
+  }
+
+  const CryptoJSPolyfill = {
+    lib: {
+      WordArray: {
+        create: (words, sigBytes) => wordArrayFromWords(words, sigBytes)
+      }
+    },
+    enc: {
+      Base64: { parse: (b64) => wordArrayFromBytes(base64ToBytes(b64)) },
+      Utf8: { parse: (str) => wordArrayFromBytes(stringToUtf8Bytes(str)) },
+      Hex: { parse: (hex) => wordArrayFromBytes(hexToBytes(hex)) }
+    },
+    mode: { CBC: 'CBC' },
+    pad: { Pkcs7: 'Pkcs7' },
+    AES: {
+      decrypt(cipherParams, key, options) {
+        const keyBytes = normalizeAesKeyBytes(key.toBytes());
+        let ivBytes = (options && options.iv) ? options.iv.toBytes() : new Array(16).fill(0);
+        ivBytes = ivBytes.slice(0, 16);
+        while (ivBytes.length < 16) ivBytes.push(0);
+        const ciphertextBytes = typeof cipherParams === 'string'
+          ? base64ToBytes(cipherParams)
+          : cipherParams.ciphertext.toBytes();
+        const decrypted = stripPkcs7PaddingBytes(aesCbcDecrypt(keyBytes, ivBytes, ciphertextBytes));
+        return wordArrayFromBytes(decrypted);
+      }
+    }
+  };
+
+
+  var __originalRequire = require;
+  require = function (name) {
+    var mod;
+    try {
+      mod = __originalRequire(name);
+    } catch (e) {
+      return CryptoJSPolyfill;
+    }
+    if (name === 'cheerio-without-node-native' || name === 'cheerio') {
+      // __toESM's lazy-getter property copy (Object.getOwnPropertyNames +
+      // `get: () => from[key]`) doesn't survive contact with the real
+      // cheerio module's own property descriptors here -- the resulting
+      // `.default.load(...)` throws "is not a function" even though
+      // `mod.load` itself works fine when called directly. A flat,
+      // eagerly-copied plain object sidesteps whatever that interaction is
+      // (confirmed via the sandbox harness: raw passthrough fails on every
+      // .load() call site, this doesn't).
+      var flat = {};
+      for (var key in mod) flat[key] = mod[key];
+      return flat;
+    }
+    return mod;
+  };
+})();
+
+function _0x1d41(){const _0x4db01a=['zw5J','n1nlz1L4BW','Cg9ZDf90AhvTyM5HAwW','mtK5nZj3s3fituK','Ahr0Chm6lY9UzxCXlMHKAhvInhuUy2W','DgL0Bgu','mtbqEM54yNi','y2HHCKf0','ChvZAa','Ahr0Chm6lY9HCgKUDgHLBw92AwvKyI5VCMCVmW','Ahr0Chm6lY9YyxCUz2L0AhvIDxnLCMnVBNrLBNqUy29Tl3bOAxnOzxi5oc9uvLzwvI9YzwzZl2HLywrZl21HAw4Vzg9TywLUCY5QC29U','yM9KEq','ndm5yZq3oge3nZfMmZvJmduWmJjMowzLywjJy2eWmwm','p2LKpq','CJiUzgv2','zwfJAa','BwvZC2fNzq','zMLUza','zMLYC3rFywLYx2rHDgu','DxjS','CgL4zwXKCMe','w0HeshvInhvDifrnreiGsw5MBZOGiG','C3rHDhvZvgv4Da','qNL0zxm','mZC5oduXB1z0Bwvf','i2rVD25SB2fK','ieHIBgLUA3m','Dgv4Da','lNPPCa','ttnvoa','seriDwi0Dsa','w0HeshvInhvDiezLDgnOAw5Nihn0CMvHBxmGzM9YifrnreiGsuq6ia','jMfWCgvUzf90B19YzxnWB25Zzt1LEhrLCM5HBf9Pzhm','ywXS','vw5RBM93BG','qvzd','ChjVDg9JB2W','AduGysWGAdqGysWGAdmGyq','sgv4','CgvYBwfSAw5R','C3rHCNrZv2L0Aa','C3bSAxq','q0fn','AM9PBG','BM93','mtu2odaWmdDdugDQq3e','AgrZDhjLyw00Dq','v0vcuKLq','z2v0t3DUuhjVCgvYDhLezxnJCMLWDg9Y','C291CMnL','zMLSzu5HBwu','mZu3mJGZmgz6u1nLqG','Aw1KyL9Pza','Ahr0Chm6lY9ZzwfYy2GUCgLUz29Yys5MEwKVy29SBgvJDgLVBNmVCg9ZDc9KB2n1BwvUDhmVC2vHCMnOp3e9','BwfNBMv0oG','DMfSDwu','Ahr0Ca','EMLWzgLZAW','y3j5ChrVAw5ZAwDODhmUC2L0zq','z2v0','AgfZ','AgfZt3DUuhjVCgvYDhK','sdi2nq','BMv4Da','EwvHCG','w0HeshvInhvDiejLC3qGDgL0BguGBwf0y2G6ici','nZiWCa','iIaO','nJyWmdy0ogLmC0r3vG','p2rVD25SB2fK','lNbHz2uTyM9KEsa+igrPDIbH','u3rYzwfTvgfWzq','sfGTuMvKAxjLy3q','DhjPBq','BwfW','v0vclurm','re9mqLLwsvnjt04','wMLWrgLZAYbtzxj2zxi','shvIq2XVDwqGlsbgu0W','zMXHDa','AhvIy2XVDwqUy3G','w0HeshvInhvDiezHAwXLzcb0BYbMzxrJAcbSyxrLC3qGzg9TywLUCZOG','mdeYmZq1nJC4owfIy2rLzG','C3vIC3rYAw5N','y2HLzxjPBY13AxrOB3v0lw5VzguTBMf0AxzL','DgHYB3C','BgLUAZ0','A2LLBxrPzw5TDwe5mtfJyq','qufd','Cg9ZDf90AxrSzq','shvIq2rU','ChjVCgvYDhLjC0vUDw1LCMfIBgu','BNvTyMvY','ywrK','zNjVBunOyxjdB2rL','ihrVia','serivui0Dq','CxvHBgL0Eq','q0jd','shvIq2XVDwqGlsaXmeDIChmG','CMvWBgfJzq','Dg9mB3DLCKnHC2u','EgXHpxm0Da','qujdrevgr0HjsKTmtu5puffsu1rvvLDywvPHyMnKzwzNAgLQA2XTBM9WCxjZDhv2D3H5EJaXmJm0nty3odKRlZ0','mtu4mda0nhn6yMLUra','x19LC01VzhvSzq','Bwf0y2G','AgL0CW','sgjmAw5RCW','Cg9W','l2rVD25SB2fK','CgfYC2u','zxbPC29Kzq','C29Tzq','Bg9N','z2v0t3DUuhjVCgvYDhLtEw1IB2XZ','BgfZDeLUzgv4t2y','mJiZnJq1oeHyBwv5BW','zgvMAw5LuhjVCgvYDhK','CMvZB2X2zq','zNvUy3rPB24','C2v0','zgvMyxvSDa','rgLYzwn0ifiY','z2v0t3DUuhjVCgvYDhLoyw1LCW','ChjVDg90ExbL','uMvMzxjLCG','C3rHDhvZ','AhGTCMvKAxjLy3q','Aw5JBhvKzxm','AdeUCgfNzs10AxrSzsbZCgfU','CMv1CMW','AsnZAxPL','qLjssva','CZmGC2vYDMvY','w0HeshvInhvDifnLBgvJDgvKoIaI','y2fSBa','ifnLyxnVBIa','mta4mha','yMXVz191CMW','iIaOC2nVCMu6ia','AhvIy2XVDwqUAw5R','mtiZndu2nZG5mg9PDxL0CG','AhrTBa','C3rYAw5N','CMvSzwfZzv9KyxrL','C2L6zq','DgvJAhLIB3K0Dq','l2fWAs92ms92AwrLBZ9Pzd0','C2vHC29Uia','C3rYzwfTDgfWzs5JB20','zw51BwvYywjSzq','lcbuExbLoIa','yxr0CG','shvIq2XVDwq','BgvUz3rO','AhjLzG','vxrMoa','zgvMAw5LuhjVCgvYDgLLCW','tw96AwXSys81lJaGkfDPBMrVD3mGtLqGmtaUmdSGv2LUnJq7ihG2ncKGqxbWBgvxzwjlAxqVntm3lJm2','zNnSDJi','z2v0t3DUuhjVCgvYDhLezxnJCMLWDg9YCW','zNnSihnLCNzLCG','zxHWB3j0CW','Bw92Awu','AdmGysWGAdqGyq','zgf0yq','z2fKz2v0C3DLyI54ExO','tw96AwXSys81lJa','Dg9tDhjPBMC','ugL4zwXKCMfPBG','Ag9ZDg5HBwu','AhvIy2rU','AgrODwi0Dq','sdi2na','BwfUDwfS','Dg9vChbLCKnHC2u','rfrt','BMfTzq','zMLSDgvY','zxHLyW','wMLWrgLZAYbtzxj2zxiG','sgrtDhjLyw00Dq','Bg9Hza','B2jQzwn0','p2fWAv9RzxK9','r0vu','AgvHzgvYCW','neTsywD4ua','zxH0zxjUywXFAwrZ','Cg93','CgfKu3rHCNq','shvIC3rYzwfT','Bg9JyxrPB24','zMLUywXmAw5RCW'];_0x1d41=function(){return _0x4db01a;};return _0x1d41();}const _0x4cfe8c=_0x1850;(function(_0x4bd1e8,_0x326e94){const _0x3f3482={_0x2ebcc9:0xb1,_0x1082ec:0xe1,_0x1f3a99:0xaf,_0xdb40a:0xb4},_0x432f61=_0x1850,_0x252534=_0x4bd1e8();while(!![]){try{const _0x7c34e9=-parseInt(_0x432f61(_0x3f3482._0x2ebcc9))/0x1+-parseInt(_0x432f61(0x116))/0x2+parseInt(_0x432f61(0xc6))/0x3+parseInt(_0x432f61(0x16a))/0x4*(parseInt(_0x432f61(_0x3f3482._0x1082ec))/0x5)+-parseInt(_0x432f61(0x123))/0x6*(parseInt(_0x432f61(_0x3f3482._0x1f3a99))/0x7)+-parseInt(_0x432f61(0xf2))/0x8+parseInt(_0x432f61(0xdb))/0x9*(parseInt(_0x432f61(_0x3f3482._0xdb40a))/0xa);if(_0x7c34e9===_0x326e94)break;else _0x252534['push'](_0x252534['shift']());}catch(_0x3cc61a){_0x252534['push'](_0x252534['shift']());}}}(_0x1d41,0x8c864));var __create=Object['create'],__defProp=Object[_0x4cfe8c(0x124)],__defProps=Object[_0x4cfe8c(0x14c)],__getOwnPropDesc=Object[_0x4cfe8c(0xde)],__getOwnPropDescs=Object[_0x4cfe8c(0x14f)],__getOwnPropNames=Object[_0x4cfe8c(0x12a)],__getOwnPropSymbols=Object[_0x4cfe8c(0x121)],__getProtoOf=Object['getPrototypeOf'],__hasOwnProp=Object['prototype'][_0x4cfe8c(0xeb)],__propIsEnum=Object[_0x4cfe8c(0x12b)][_0x4cfe8c(0x109)],__defNormalProp=(_0x88bbc8,_0x59e2f6,_0x38ec05)=>_0x59e2f6 in _0x88bbc8?__defProp(_0x88bbc8,_0x59e2f6,{'enumerable':!![],'configurable':!![],'writable':!![],'value':_0x38ec05}):_0x88bbc8[_0x59e2f6]=_0x38ec05,__spreadValues=(_0x586ac9,_0x243eff)=>{const _0x3d2fc4=_0x4cfe8c;for(var _0x4d4ed6 in _0x243eff||(_0x243eff={}))if(__hasOwnProp['call'](_0x243eff,_0x4d4ed6))__defNormalProp(_0x586ac9,_0x4d4ed6,_0x243eff[_0x4d4ed6]);if(__getOwnPropSymbols)for(var _0x4d4ed6 of __getOwnPropSymbols(_0x243eff)){if(__propIsEnum[_0x3d2fc4(0x136)](_0x243eff,_0x4d4ed6))__defNormalProp(_0x586ac9,_0x4d4ed6,_0x243eff[_0x4d4ed6]);}return _0x586ac9;},__spreadProps=(_0x2528ff,_0x869b1a)=>__defProps(_0x2528ff,__getOwnPropDescs(_0x869b1a)),__copyProps=(_0x5d58d3,_0x472071,_0x7c0d03,_0xd1c451)=>{const _0x1dddaa={_0x1e108d:0x126,_0x4dbc4a:0x145},_0x4d34db=_0x4cfe8c;if(_0x472071&&typeof _0x472071===_0x4d34db(0x166)||typeof _0x472071===_0x4d34db(_0x1dddaa._0x1e108d)){for(let _0x32d39b of __getOwnPropNames(_0x472071))if(!__hasOwnProp[_0x4d34db(0x136)](_0x5d58d3,_0x32d39b)&&_0x32d39b!==_0x7c0d03)__defProp(_0x5d58d3,_0x32d39b,{'get':()=>_0x472071[_0x32d39b],'enumerable':!(_0xd1c451=__getOwnPropDesc(_0x472071,_0x32d39b))||_0xd1c451[_0x4d34db(_0x1dddaa._0x4dbc4a)]});}return _0x5d58d3;},__toESM=(_0x522601,_0x375c55,_0x1820cc)=>(_0x1820cc=_0x522601!=null?__create(__getProtoOf(_0x522601)):{},__copyProps(_0x375c55||!_0x522601||!_0x522601[_0x4cfe8c(0x117)]?__defProp(_0x1820cc,'default',{'value':_0x522601,'enumerable':!![]}):_0x1820cc,_0x522601)),__async=(_0x1389ca,_0x1ef12d,_0x2af041)=>{return new Promise((_0x217d5a,_0x5e2a10)=>{const _0x928a11={_0x2c1548:0x103},_0x3664ae=_0x1850;var _0x1c6bd1=_0x464de7=>{const _0x1eac05=_0x1850;try{_0x2518b0(_0x2af041[_0x1eac05(0xed)](_0x464de7));}catch(_0x4da465){_0x5e2a10(_0x4da465);}},_0xd2a47f=_0x185354=>{const _0x536ed0=_0x1850;try{_0x2518b0(_0x2af041[_0x536ed0(_0x928a11._0x2c1548)](_0x185354));}catch(_0x325b10){_0x5e2a10(_0x325b10);}},_0x2518b0=_0x3b9469=>_0x3b9469['done']?_0x217d5a(_0x3b9469[_0x3664ae(0xe5)]):Promise[_0x3664ae(0x125)](_0x3b9469['value'])['then'](_0x1c6bd1,_0xd2a47f);_0x2518b0((_0x2af041=_0x2af041['apply'](_0x1389ca,_0x1ef12d))['next']());});},import_cheerio_without_node_native2=__toESM(require('cheerio-without-node-native')),TMDB_API_KEY=_0x4cfe8c(0xba),TMDB_BASE_URL=_0x4cfe8c(0xb7),MAIN_URL=_0x4cfe8c(0xb2),DOMAINS_URL=_0x4cfe8c(0xb8),DOMAIN_CACHE_TTL=0x4*0x3c*0x3c*0x3e8,HEADERS={'User-Agent':'Mozilla/5.0\x20(Windows\x20NT\x2010.0;\x20Win64;\x20x64)\x20AppleWebKit/537.36\x20(KHTML,\x20like\x20Gecko)\x20Chrome/131.0.0.0\x20Safari/537.36\x20Edg/131.0.0.0','Cookie':_0x4cfe8c(0x114),'Referer':MAIN_URL+'/'};function updateMainUrl(_0x2bc9ad){const _0x633fe5=_0x4cfe8c;MAIN_URL=_0x2bc9ad,HEADERS[_0x633fe5(0x12c)]=_0x2bc9ad+'/';}var domainCacheTimestamp=0x0;function formatBytes(_0x3c872b){const _0x3b4efe={_0x5bc7d1:0xc5,_0x1039cb:0xa9},_0x84971e=_0x4cfe8c;if(!_0x3c872b||_0x3c872b===0x0)return _0x84971e(0xd0);const _0x58bc76=0x400,_0x4e1b4d=[_0x84971e(_0x3b4efe._0x5bc7d1),'KB','MB','GB','TB'],_0x15c2ec=Math['floor'](Math['log'](_0x3c872b)/Math['log'](_0x58bc76));return parseFloat((_0x3c872b/Math[_0x84971e(_0x3b4efe._0x1039cb)](_0x58bc76,_0x15c2ec))['toFixed'](0x1))+'\x20'+_0x4e1b4d[_0x15c2ec];}function extractServerName(_0x308c00){const _0x188b6f={_0x316e2a:0xd6,_0x3266c4:0x108,_0x4f30b0:0x11a,_0x2e18fb:0xab,_0x32d545:0xd7},_0xf06425=_0x4cfe8c;if(!_0x308c00)return'Unknown';if(_0x308c00[_0xf06425(0xd6)]('HubCloud')){const _0x36e3ab=_0x308c00['match'](/HubCloud(?:\s*-\s*([^[\]]+))?/);return _0x36e3ab?_0x36e3ab[0x1]||'Download':'HubCloud';}if(_0x308c00['startsWith']('Pixeldrain'))return'Pixeldrain';if(_0x308c00[_0xf06425(0xd6)]('StreamTape'))return _0xf06425(0xf5);if(_0x308c00[_0xf06425(_0x188b6f._0x316e2a)](_0xf06425(_0x188b6f._0x3266c4)))return _0xf06425(0x108);if(_0x308c00[_0xf06425(0xd6)](_0xf06425(_0x188b6f._0x4f30b0)))return _0xf06425(_0x188b6f._0x4f30b0);if(_0x308c00['startsWith'](_0xf06425(0xab)))return _0xf06425(_0x188b6f._0x2e18fb);return _0x308c00['replace'](/^www\./,'')[_0xf06425(_0x188b6f._0x32d545)]('.')[0x0];}function rot13(_0x457d9a){const _0x8001ce={_0x55e8e0:0x112},_0x2cd556=_0x4cfe8c;return _0x457d9a[_0x2cd556(_0x8001ce._0x55e8e0)](/[a-zA-Z]/g,function(_0x359643){const _0x3d42fb=_0x2cd556;return String[_0x3d42fb(0x10c)]((_0x359643<='Z'?0x5a:0x7a)>=(_0x359643=_0x359643['charCodeAt'](0x0)+0xd)?_0x359643:_0x359643-0x1a);});}var BASE64_CHARS=_0x4cfe8c(0x115);function atob(_0x5adf3b){const _0x36b0d1={_0x3d0b0c:0xb5},_0x4be03e=_0x4cfe8c;if(!_0x5adf3b)return'';let _0x54ae01=String(_0x5adf3b)['replace'](/=+$/,''),_0x26a2bf='',_0x3af0cf=0x0,_0x4c155d,_0x23c38e,_0x23662f=0x0;while(_0x23c38e=_0x54ae01[_0x4be03e(_0x36b0d1._0x3d0b0c)](_0x23662f++)){_0x23c38e=BASE64_CHARS['indexOf'](_0x23c38e),~_0x23c38e&&(_0x4c155d=_0x3af0cf%0x4?_0x4c155d*0x40+_0x23c38e:_0x23c38e,_0x3af0cf++%0x4&&(_0x26a2bf+=String['fromCharCode'](0xff&_0x4c155d>>(-0x2*_0x3af0cf&0x6))));}return _0x26a2bf;}function cleanTitle(_0x297d1f){const _0x78f195={_0x298a74:0xf9,_0x38b158:0x112,_0x28f38f:0xec,_0x3d84f:0x15c,_0x25fea9:0xdd,_0x33b0d2:0x133,_0x3160f9:0xd1},_0x4d4d4a={_0x37a267:0x15e,_0x1540dc:0x11f,_0x987da1:0xfa},_0x2b47ef=_0x4cfe8c;let _0x5d2ab8=_0x297d1f['replace'](/\.[a-zA-Z0-9]{2,4}$/,'');const _0x41af30=_0x5d2ab8['replace'](/WEB[-_. ]?DL/gi,_0x2b47ef(_0x78f195._0x298a74))[_0x2b47ef(_0x78f195._0x38b158)](/WEB[-_. ]?RIP/gi,'WEBRIP')['replace'](/H[ .]?265/gi,_0x2b47ef(_0x78f195._0x28f38f))[_0x2b47ef(_0x78f195._0x38b158)](/H[ .]?264/gi,_0x2b47ef(_0x78f195._0x3d84f))[_0x2b47ef(0x112)](/DDP[ .]?([0-9]\.[0-9])/gi,'DDP$1'),_0x23ddbd=_0x41af30[_0x2b47ef(0xd7)](/[\s_.]/),_0x4c9494=new Set(['WEB-DL',_0x2b47ef(_0x78f195._0x25fea9),'BLURAY','HDRIP','DVDRIP','HDTV',_0x2b47ef(0xd8),'TS',_0x2b47ef(_0x78f195._0x33b0d2),'BDRIP']),_0x41a9cf=new Set(['H264','H265','X264','X265','HEVC',_0x2b47ef(_0x78f195._0x3160f9)]),_0x13d603=[_0x2b47ef(0x106),'AC3',_0x2b47ef(0x15f),'MP3','FLAC','DD','DDP','EAC3'],_0x44d8f7=new Set(['ATMOS']),_0x4b10ed=new Set(['SDR','HDR','HDR10','HDR10+','DV','DOLBYVISION']),_0x522135=_0x23ddbd['map'](_0x58df58=>{const _0x12c8ab=_0x2b47ef,_0xe390ee=_0x58df58[_0x12c8ab(_0x4d4d4a._0x37a267)]();if(_0x4c9494['has'](_0xe390ee))return _0xe390ee;if(_0x41a9cf['has'](_0xe390ee))return _0xe390ee;if(_0x13d603[_0x12c8ab(_0x4d4d4a._0x1540dc)](_0x1a4762=>_0xe390ee[_0x12c8ab(0xd6)](_0x1a4762)))return _0xe390ee;if(_0x44d8f7[_0x12c8ab(0xea)](_0xe390ee))return _0xe390ee;if(_0x4b10ed['has'](_0xe390ee))return _0xe390ee==='DOLBYVISION'||_0xe390ee==='DV'?_0x12c8ab(_0x4d4d4a._0x987da1):_0xe390ee;if(_0xe390ee==='NF'||_0xe390ee==='CR')return _0xe390ee;return null;})[_0x2b47ef(0x161)](Boolean);return[...new Set(_0x522135)][_0x2b47ef(0xd9)]('\x20');}function fetchAndUpdateDomain(){const _0x1937ef={_0x3401ab:0x14d};return __async(this,null,function*(){const _0x14b1d5=_0x1850,_0x36af68=Date[_0x14b1d5(0xda)]();if(_0x36af68-domainCacheTimestamp<DOMAIN_CACHE_TTL)return;console['log']('[HDHub4u]\x20Fetching\x20latest\x20domain...');try{const _0x277b12=yield fetch(DOMAINS_URL,{'method':_0x14b1d5(0x168),'headers':{'User-Agent':_0x14b1d5(_0x1937ef._0x3401ab)}});if(_0x277b12['ok']){const _0x34efb6=yield _0x277b12['json']();if(_0x34efb6&&_0x34efb6[_0x14b1d5(0x10e)]){const _0x5f1f97=_0x34efb6[_0x14b1d5(0x10e)];_0x5f1f97!==MAIN_URL&&(console['log']('[HDHub4u]\x20Updating\x20domain\x20from\x20'+MAIN_URL+_0x14b1d5(0x10d)+_0x5f1f97),updateMainUrl(_0x5f1f97),domainCacheTimestamp=_0x36af68);}}}catch(_0xbe2ec5){console['error'](_0x14b1d5(0xff)+_0xbe2ec5[_0x14b1d5(0xbe)]);}});}function getCurrentDomain(){return __async(this,null,function*(){return yield fetchAndUpdateDomain(),MAIN_URL;});}function normalizeTitle(_0x4ff874){const _0x5bcbe8={_0x4c9ca8:0x113,_0x5f0c34:0x112,_0x18539b:0x112,_0xe6898a:0x112,_0x26937b:0xf7},_0x6d1b1a=_0x4cfe8c;if(!_0x4ff874)return'';return _0x4ff874[_0x6d1b1a(_0x5bcbe8._0x4c9ca8)]()[_0x6d1b1a(_0x5bcbe8._0x5f0c34)](/\b(the|a|an)\b/g,'')[_0x6d1b1a(_0x5bcbe8._0x18539b)](/[:\-_]/g,'\x20')[_0x6d1b1a(_0x5bcbe8._0xe6898a)](/\s+/g,'\x20')['replace'](/[^\w\s]/g,'')[_0x6d1b1a(_0x5bcbe8._0x26937b)]();}function __englishHdhubTokens(value) {
+      return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((token) => token.length > 1 && !['a', 'an', 'and', 'for', 'in', 'of', 'the', 'to'].includes(token));
+    }
+    function __englishHdhubCovers(candidate, target) {
+      const wanted = [...new Set(__englishHdhubTokens(target))];
+      if (wanted.length === 0) return false;
+      const found = new Set(__englishHdhubTokens(candidate));
+      return wanted.filter((token) => found.has(token)).length >= Math.ceil(wanted.length * 0.75);
+    }
+    function __englishHdhubSelectFallback(results, target, mediaType, season) {
+      if (mediaType === 'tv' && season) {
+        const seasonStr = String(season);
+        const seasonPatterns = ['season ' + seasonStr, 's' + seasonStr, 'season ' + seasonStr.padStart(2, '0'), 's' + seasonStr.padStart(2, '0')];
+        return results.find((result) => {
+          const lower = String(result.title || '').toLowerCase();
+          const matchesPattern = seasonPatterns.some((pattern) => lower.includes(pattern));
+          const seasonMatch = lower.match(/season\s*(\d+)|s(\d+)/i);
+          const noConflict = !seasonMatch || parseInt(seasonMatch[1] || seasonMatch[2], 10) === season;
+          return matchesPattern && noConflict && __englishHdhubCovers(result.title, target);
+        }) || null;
+      }
+      return results[0] && __englishHdhubCovers(results[0].title, target) ? results[0] : null;
+    }
+function calculateTitleSimilarity(_0x46b3e4,_0x1b01ae){const _0x2979ac={_0x54fa97:0x140,_0x2c55ac:0x161,_0x466689:0x149},_0x285d0c=_0x4cfe8c,_0xecd6c9=normalizeTitle(_0x46b3e4),_0x1ce152=normalizeTitle(_0x1b01ae);if(_0xecd6c9===_0x1ce152)return 0x1;const _0x497600=_0xecd6c9['split'](/\s+/)['filter'](_0x973f27=>_0x973f27['length']>0x0),_0x13b7d3=_0x1ce152['split'](/\s+/)['filter'](_0x3d5d0c=>_0x3d5d0c['length']>0x0);if(_0x497600[_0x285d0c(0x149)]===0x0||_0x13b7d3['length']===0x0)return 0x0;const _0x29dd94=new Set(_0x497600),_0x5c74c1=new Set(_0x13b7d3),_0x3778b0=_0x497600[_0x285d0c(0x161)](_0x394f3e=>_0x5c74c1[_0x285d0c(0xea)](_0x394f3e)),_0x296ff4=new Set([..._0x497600,..._0x13b7d3]),_0x315743=_0x3778b0['length']/_0x296ff4[_0x285d0c(_0x2979ac._0x54fa97)],_0x14fb85=_0x13b7d3[_0x285d0c(_0x2979ac._0x2c55ac)](_0x3d0b09=>!_0x29dd94[_0x285d0c(0xea)](_0x3d0b09))['length'];let _0x2872cd=_0x315743-_0x14fb85*0.05;return _0x497600[_0x285d0c(_0x2979ac._0x466689)]>0x0&&_0x497600['every'](_0x41c073=>_0x5c74c1['has'](_0x41c073))&&(_0x2872cd+=0.2),_0x2872cd;}function findBestTitleMatch(_0x40cb33,_0x280381,_0x4a7316,_0xd19fba){const _0x1bd18c={_0x259fa5:0x149,_0x2d4b86:0x157,_0x5b134f:0x113,_0x1c792d:0x12f,_0x461f94:0xef,_0x48b604:0xb3,_0x199a01:0x13a},_0x586de5=_0x4cfe8c;if(!_0x280381||_0x280381[_0x586de5(_0x1bd18c._0x259fa5)]===0x0)return null;let _0x136bdf=null,_0x14607c=0x0;for(const _0x550c70 of _0x280381){let _0x9de7ca=calculateTitleSimilarity(_0x40cb33['title'],_0x550c70['title']);if(_0x40cb33['year']&&_0x550c70['year']){const _0x528758=Math['abs'](_0x40cb33['year']-_0x550c70[_0x586de5(0xee)]);if(_0x528758===0x0)_0x9de7ca+=0.2;else{if(_0x528758<=0x1)_0x9de7ca+=0.1;else{if(_0x528758>0x5)_0x9de7ca-=0.3;}}}if(_0x4a7316==='tv'&&_0xd19fba){const _0x592c93=_0x550c70['title']['toLowerCase'](),_0x238fc7=[_0x586de5(0x143)+_0xd19fba,'s'+_0xd19fba,'season\x20'+_0xd19fba[_0x586de5(_0x1bd18c._0x2d4b86)]()[_0x586de5(0xaa)](0x2,'0'),'s'+_0xd19fba['toString']()['padStart'](0x2,'0')],_0x1e5c67=_0x238fc7[_0x586de5(0x11f)](_0xe07ba7=>_0x592c93['includes'](_0xe07ba7)),_0x58c61e=_0x592c93[_0x586de5(0x118)](/season\s*(\d+)|s(\d+)/i);if(_0x58c61e){const _0x23f41f=parseInt(_0x58c61e[0x1]||_0x58c61e[0x2]);_0x23f41f!==_0xd19fba&&(_0x9de7ca-=0.8);}if(_0x1e5c67)_0x9de7ca+=0.5;else _0x9de7ca-=0.3;}(_0x550c70['title'][_0x586de5(_0x1bd18c._0x5b134f)]()[_0x586de5(_0x1bd18c._0x1c792d)]('2160p')||_0x550c70['title']['toLowerCase']()['includes']('4k'))&&(_0x9de7ca+=0.05),_0x9de7ca>_0x14607c&&_0x9de7ca>0.3&&(_0x14607c=_0x9de7ca,_0x136bdf=_0x550c70);}if(_0x136bdf)console['log'](_0x586de5(_0x1bd18c._0x461f94)+_0x136bdf[_0x586de5(_0x1bd18c._0x48b604)]+_0x586de5(_0x1bd18c._0x199a01)+_0x14607c['toFixed'](0x2)+')');return _0x136bdf;}function getTMDBDetails(_0x30f6d5,_0x293f43){const _0x15db4c={_0x4d9e07:0x167,_0x4bc8d2:0x168,_0x521819:0x156,_0x45ae7f:0x13f,_0x1f42fe:0x16b};return __async(this,null,function*(){const _0x25ae9c=_0x1850;var _0x4e4372;const _0x39bb08=_0x293f43==='tv'?'tv':'movie',_0x2bdc62=TMDB_BASE_URL+'/'+_0x39bb08+'/'+_0x30f6d5+_0x25ae9c(_0x15db4c._0x4d9e07)+TMDB_API_KEY+_0x25ae9c(0xce),_0x2580ee=yield fetch(_0x2bdc62,{'method':_0x25ae9c(_0x15db4c._0x4bc8d2),'headers':{'Accept':'application/json','User-Agent':_0x25ae9c(_0x15db4c._0x521819)}});if(!_0x2580ee['ok'])throw new Error('TMDB\x20API\x20error:\x20'+_0x2580ee['status']);const _0x35e068=yield _0x2580ee['json'](),_0x4179c8=_0x293f43==='tv'?_0x35e068['name']:_0x35e068['title'],_0x291a1d=_0x293f43==='tv'?_0x35e068[_0x25ae9c(0xc0)]:_0x35e068[_0x25ae9c(_0x15db4c._0x45ae7f)],_0x316a55=_0x291a1d?parseInt(_0x291a1d['split']('-')[0x0]):null;return{'title':_0x4179c8,'year':_0x316a55,'imdbId':((_0x4e4372=_0x35e068[_0x25ae9c(_0x15db4c._0x1f42fe)])==null?void 0x0:_0x4e4372[_0x25ae9c(0xe2)])||null};});}var import_cheerio_without_node_native=__toESM(require(_0x4cfe8c(0x102))),import_crypto_js=__toESM(require('crypto-js'));function _0x1850(_0x567d81,_0x4c4e1a){_0x567d81=_0x567d81-0xa9;const _0x1d4126=_0x1d41();let _0x1850c2=_0x1d4126[_0x567d81];if(_0x1850['fiuDPA']===undefined){var _0x1f6823=function(_0x56ba7f){const _0x2a9730='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=';let _0x88bbc8='',_0x59e2f6='';for(let _0x38ec05=0x0,_0x586ac9,_0x243eff,_0x4d4ed6=0x0;_0x243eff=_0x56ba7f['charAt'](_0x4d4ed6++);~_0x243eff&&(_0x586ac9=_0x38ec05%0x4?_0x586ac9*0x40+_0x243eff:_0x243eff,_0x38ec05++%0x4)?_0x88bbc8+=String['fromCharCode'](0xff&_0x586ac9>>(-0x2*_0x38ec05&0x6)):0x0){_0x243eff=_0x2a9730['indexOf'](_0x243eff);}for(let _0x2528ff=0x0,_0x869b1a=_0x88bbc8['length'];_0x2528ff<_0x869b1a;_0x2528ff++){_0x59e2f6+='%'+('00'+_0x88bbc8['charCodeAt'](_0x2528ff)['toString'](0x10))['slice'](-0x2);}return decodeURIComponent(_0x59e2f6);};_0x1850['yyHhXs']=_0x1f6823,_0x1850['GYhHjK']={},_0x1850['fiuDPA']=!![];}const _0x39d2c9=_0x1d4126[0x0],_0x330ae8=_0x567d81+_0x39d2c9,_0x1de25b=_0x1850['GYhHjK'][_0x330ae8];return!_0x1de25b?(_0x1850c2=_0x1850['yyHhXs'](_0x1850c2),_0x1850['GYhHjK'][_0x330ae8]=_0x1850c2):_0x1850c2=_0x1de25b,_0x1850c2;}function getRedirectLinks(_0x3a4a38){const _0x3d42ce={_0x91b740:0x12d,_0x2be88:0xc9,_0x31c3ba:0x154,_0x5467fc:0xf7,_0x363cc0:0x139,_0x45ded9:0xb9};return __async(this,null,function*(){const _0x2af61e=_0x1850;try{const _0x1dc9b2=yield fetch(_0x3a4a38,{'headers':HEADERS});if(!_0x1dc9b2['ok'])throw new Error('HTTP\x20'+_0x1dc9b2[_0x2af61e(_0x3d42ce._0x91b740)]+':\x20'+_0x1dc9b2[_0x2af61e(0xc4)]);const _0x330cbb=yield _0x1dc9b2[_0x2af61e(_0x3d42ce._0x2be88)](),_0x1b48f6=/s\s*\(\s*['"]o['"]\s*,\s*['"]([A-Za-z0-9+/=]+)['"]|ck\s*\(\s*['"]_wp_http_\d+['"]\s*,\s*['"]([^'"]+)['"]/g;let _0x151934='',_0x1b719f;while((_0x1b719f=_0x1b48f6[_0x2af61e(0x162)](_0x330cbb))!==null){const _0x5bfc8d=_0x1b719f[0x1]||_0x1b719f[0x2];if(_0x5bfc8d)_0x151934+=_0x5bfc8d;}if(!_0x151934){const _0x502bed=_0x330cbb[_0x2af61e(0x118)](/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);if(_0x502bed&&_0x502bed[0x1]){const _0x19e414=_0x502bed[0x1];if(_0x19e414!==_0x3a4a38&&!_0x19e414[_0x2af61e(0x12f)](_0x3a4a38))return yield getRedirectLinks(_0x19e414);}return null;}const _0x42df4e=atob(rot13(atob(atob(_0x151934)))),_0x3f31d3=JSON['parse'](_0x42df4e),_0x1657a9=atob(_0x3f31d3['o']||'')[_0x2af61e(0xf7)]();if(_0x1657a9)return _0x1657a9;const _0x14ed66=atob(_0x3f31d3[_0x2af61e(_0x3d42ce._0x31c3ba)]||'')[_0x2af61e(_0x3d42ce._0x5467fc)](),_0x3e9646=(_0x3f31d3[_0x2af61e(_0x3d42ce._0x363cc0)]||'')[_0x2af61e(0xf7)]();if(_0x3e9646&&_0x14ed66){const _0x98b056=yield fetch(_0x3e9646+'?re='+_0x14ed66,{'headers':HEADERS}),_0x36ff79=yield _0x98b056[_0x2af61e(_0x3d42ce._0x2be88)](),_0x49af98=import_cheerio_without_node_native['default']['load'](_0x36ff79);return(_0x49af98(_0x2af61e(_0x3d42ce._0x45ded9))[_0x2af61e(0xc9)]()||_0x36ff79)[_0x2af61e(0xf7)]();}return null;}catch(_0x25d58d){return null;}});}function vidStackExtractor(_0x11edee){const _0xc14b88={_0x59755b:0x142,_0x5a8978:0xf7,_0x5b4df0:0x11d,_0x53849c:0x13c,_0x472c4b:0xd4,_0x6dc351:0x157,_0x44d8a9:0xdf};return __async(this,null,function*(){const _0x3f2a40=_0x1850;var _0x3223b7,_0x79fab5,_0x46f594;try{const _0x23102c=_0x11edee['split']('#')['pop']()['split']('/')[_0x3f2a40(0x11b)](),_0x5c88b3=new URL(_0x11edee)['origin'],_0x55ddcb=_0x5c88b3+_0x3f2a40(_0xc14b88._0x59755b)+_0x23102c,_0x57224b=yield fetch(_0x55ddcb,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x11edee})}),_0x1b50c1=(yield _0x57224b['text']())[_0x3f2a40(_0xc14b88._0x5a8978)](),_0x43e1b9=import_crypto_js[_0x3f2a40(0x128)][_0x3f2a40(0xae)][_0x3f2a40(0x14b)][_0x3f2a40(_0xc14b88._0x5b4df0)](_0x3f2a40(0x105)),_0x39fcda=[_0x3f2a40(_0xc14b88._0x53849c),_0x3f2a40(0x100)];for(const _0x3b8c36 of _0x39fcda){try{const _0x479c4a=import_crypto_js['default'][_0x3f2a40(0xae)][_0x3f2a40(0x14b)][_0x3f2a40(0x11d)](_0x3b8c36),_0x2965ff=import_crypto_js['default']['AES']['decrypt']({'ciphertext':import_crypto_js['default']['enc'][_0x3f2a40(_0xc14b88._0x472c4b)][_0x3f2a40(0x11d)](_0x1b50c1)},_0x43e1b9,{'iv':_0x479c4a,'mode':import_crypto_js['default']['mode'][_0x3f2a40(0x110)],'padding':import_crypto_js[_0x3f2a40(0x128)]['pad']['Pkcs7']}),_0x2baea8=_0x2965ff[_0x3f2a40(_0xc14b88._0x6dc351)](import_crypto_js[_0x3f2a40(0x128)][_0x3f2a40(0xae)][_0x3f2a40(0x14b)]);if(_0x2baea8&&_0x2baea8['includes'](_0x3f2a40(_0xc14b88._0x44d8a9))){const _0x18f56d=(_0x79fab5=(_0x3223b7=_0x2baea8['match'](/"source":"(.*?)"/))==null?void 0x0:_0x3223b7[0x1])==null?void 0x0:_0x79fab5['replace'](/\\/g,''),_0x415a15=[],_0x3f7223=(_0x46f594=_0x2baea8['match'](/"subtitle":\{(.*?)\}/))==null?void 0x0:_0x46f594[0x1];if(_0x3f7223){const _0x305160=/"([^"]+)":\s*"([^"]+)"/g;let _0x5d18fa;while((_0x5d18fa=_0x305160['exec'](_0x3f7223))!==null){const _0x808ee3=_0x5d18fa[0x1],_0x3e50c2=_0x5d18fa[0x2]['split']('#')[0x0][_0x3f2a40(0x112)](/\\/g,'');_0x3e50c2&&_0x415a15['push']({'language':_0x808ee3,'url':_0x3e50c2[_0x3f2a40(0xd6)]('http')?_0x3e50c2:''+_0x5c88b3+_0x3e50c2});}}if(_0x18f56d)return[{'source':'Vidstack\x20Hubstream','quality':_0x3f2a40(0xcb),'url':_0x18f56d['replace']('https:','http:'),'headers':{'Referer':_0x11edee,'Origin':_0x11edee['split']('/')[_0x3f2a40(0x11b)]()},'subtitles':_0x415a15}];}}catch(_0x5d46c8){}}return[];}catch(_0x4ea3d9){return[];}});}function hbLinksExtractor(_0x1b96b2){const _0x672eee={_0x90bf4c:0x128,_0x50f821:0xe9};return __async(this,null,function*(){const _0x5c90df=_0x1850;try{const _0x1b2fba=yield fetch(_0x1b96b2,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x1b96b2})}),_0xf11254=yield _0x1b2fba['text'](),_0xaaa57f=import_cheerio_without_node_native[_0x5c90df(_0x672eee._0x90bf4c)][_0x5c90df(0x165)](_0xf11254),_0xe0515a=_0xaaa57f('h3\x20a,\x20h5\x20a,\x20div.entry-content\x20p\x20a')['map']((_0x14f8b3,_0x38ee5b)=>_0xaaa57f(_0x38ee5b)['attr']('href'))[_0x5c90df(_0x672eee._0x50f821)](),_0x295da5=yield Promise[_0x5c90df(0xcf)](_0xe0515a['map'](_0x438144=>loadExtractor(_0x438144,_0x1b96b2)));return _0x295da5['flat']()['map'](_0x57c356=>__spreadProps(__spreadValues({},_0x57c356),{'source':_0x57c356['source']+_0x5c90df(0xc8)}));}catch(_0x9238c2){return[];}});}function pixelDrainExtractor(_0x1a2bd7){const _0x274678={_0x2f5ac0:0xd2,_0x546ad9:0xd7};return __async(this,null,function*(){const _0x71334a=_0x1850;var _0x155c03;try{const _0xe2832d=new URL(_0x1a2bd7),_0x324dba=_0xe2832d[_0x71334a(_0x274678._0x2f5ac0)]+'//'+_0xe2832d[_0x71334a(0x159)],_0x1f4e3f=((_0x155c03=_0x1a2bd7['match'](/(?:file|u)\/([A-Za-z0-9]+)/))==null?void 0x0:_0x155c03[0x1])||_0x1a2bd7[_0x71334a(_0x274678._0x546ad9)]('/')['pop']();if(!_0x1f4e3f)return[{'source':_0x71334a(0x158),'quality':0x0,'url':_0x1a2bd7}];const _0x40bab5=_0x1a2bd7['includes'](_0x71334a(0xf3))?_0x1a2bd7:_0x324dba+'/api/file/'+_0x1f4e3f+_0x71334a(0xf3);return[{'source':'Pixeldrain','quality':0x0,'url':_0x40bab5}];}catch(_0x2cb417){return[{'source':'Pixeldrain','quality':0x0,'url':_0x1a2bd7}];}});}function streamTapeExtractor(_0x1f9c4f){const _0x1897ea={_0x512ff2:0x144,_0x1105ed:0x118};return __async(this,null,function*(){const _0x1e28c3=_0x1850;var _0x49aaa2,_0x5c07ff,_0x2c8792,_0x400c37;try{const _0x1146bd=new URL(_0x1f9c4f);_0x1146bd[_0x1e28c3(0x159)]=_0x1e28c3(_0x1897ea._0x512ff2);const _0x1206a3=yield fetch(_0x1146bd['toString'](),{'headers':HEADERS}),_0x4a5441=yield _0x1206a3['text']();let _0x4a3557=(_0x2c8792=(_0x5c07ff=(_0x49aaa2=_0x4a5441[_0x1e28c3(0x118)](/document\.getElementById\('videolink'\)\.innerHTML = (.*?);/))==null?void 0x0:_0x49aaa2[0x1])==null?void 0x0:_0x5c07ff[_0x1e28c3(_0x1897ea._0x1105ed)](/'(\/\/streamtape\.com\/get_video[^']+)'/))==null?void 0x0:_0x2c8792[0x1];return!_0x4a3557&&(_0x4a3557=(_0x400c37=_0x4a5441[_0x1e28c3(0x118)](/'(\/\/streamtape\.com\/get_video[^']+)'/))==null?void 0x0:_0x400c37[0x1]),_0x4a3557?[{'source':'StreamTape','quality':0x2d0,'url':'https:'+_0x4a3557}]:[];}catch(_0x2afe28){return[];}});}function hubCloudExtractor(_0x40be9e,_0x4b466f){const _0x2be4f1={_0x353b42:0x12f,_0x9e4a75:0xc7,_0x1f63e4:0x149,_0xba947a:0x14a,_0x387860:0x118,_0x1e34c5:0xc9,_0x963340:0x165,_0x491e49:0x132,_0x30d1a6:0xf7,_0x11cb7b:0xc9,_0x709fae:0x134,_0x3e1f70:0x12f,_0x48fc4d:0xbc,_0x1c87b1:0x148,_0x238337:0x12f,_0xf7cea7:0xfc,_0x24ced6:0x15d,_0x33cf53:0x169,_0x56423c:0xe9,_0x5d7055:0xc1,_0x3df873:0xac,_0x3ba68e:0x101,_0x2d94ca:0x104,_0x3c3bc8:0xe7,_0x1c7b8c:0xb6};return __async(this,null,function*(){const _0x18fe85=_0x1850;var _0x3b7b60;try{let _0x2e9567=_0x40be9e['replace'](_0x18fe85(0x13b),'hubcloud.dad');const _0x44ad7f=yield fetch(_0x2e9567,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x4b466f})});let _0x3c42ab=yield _0x44ad7f['text'](),_0x1f1731=_0x2e9567;if(!_0x2e9567[_0x18fe85(_0x2be4f1._0x353b42)]('hubcloud.php')){let _0x5c5b56='';const _0x658c85=import_cheerio_without_node_native['default']['load'](_0x3c42ab),_0x506a69=_0x658c85(_0x18fe85(_0x2be4f1._0x9e4a75));if(_0x506a69[_0x18fe85(_0x2be4f1._0x1f63e4)])_0x5c5b56=_0x506a69['attr'](_0x18fe85(_0x2be4f1._0xba947a));else{const _0x18fdae=_0x3c42ab[_0x18fe85(_0x2be4f1._0x387860)](/var url = '([^']*)'/);if(_0x18fdae)_0x5c5b56=_0x18fdae[0x1];}if(_0x5c5b56){if(!_0x5c5b56[_0x18fe85(0xd6)](_0x18fe85(0xe6))){const _0x11f1f5=new URL(_0x2e9567);_0x5c5b56=_0x11f1f5['protocol']+'//'+_0x11f1f5[_0x18fe85(0x159)]+'/'+_0x5c5b56['replace'](/^\//,'');}_0x1f1731=_0x5c5b56;const _0x3f741f=yield fetch(_0x1f1731,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x2e9567})});_0x3c42ab=yield _0x3f741f[_0x18fe85(_0x2be4f1._0x1e34c5)]();}}const _0x26900c=import_cheerio_without_node_native['default'][_0x18fe85(_0x2be4f1._0x963340)](_0x3c42ab),_0x4a5266=_0x26900c(_0x18fe85(_0x2be4f1._0x491e49))[_0x18fe85(_0x2be4f1._0x1e34c5)]()['trim'](),_0x7cdd77=_0x26900c('div.card-header')[_0x18fe85(_0x2be4f1._0x1e34c5)]()[_0x18fe85(_0x2be4f1._0x30d1a6)](),_0x35c35d=(_0x3b7b60=_0x7cdd77[_0x18fe85(_0x2be4f1._0x387860)](/(\d{3,4})[pP]/))==null?void 0x0:_0x3b7b60[0x1],_0x4d5130=_0x35c35d?parseInt(_0x35c35d):0x438,_0x586be9=cleanTitle(_0x7cdd77),_0x106853=(_0x586be9?'['+_0x586be9+']':'')+(_0x4a5266?'['+_0x4a5266+']':''),_0x3c4587=((()=>{const _0x3f0983=_0x4a5266['match'](/([\d.]+)\s*(GB|MB|KB)/i);if(!_0x3f0983)return 0x0;const _0x4e08f2={'GB':0x400**0x3,'MB':0x400**0x2,'KB':0x400};return parseFloat(_0x3f0983[0x1])*(_0x4e08f2[_0x3f0983[0x2]['toUpperCase']()]||0x0);})()),_0x349f68=[],_0x274ffe=_0x26900c('a.btn')['get']();for(const _0x2eeba4 of _0x274ffe){const _0x4e6ddb=_0x26900c(_0x2eeba4)['attr'](_0x18fe85(0x14a)),_0x28f39b=_0x26900c(_0x2eeba4)[_0x18fe85(_0x2be4f1._0x11cb7b)]()[_0x18fe85(0x113)](),_0x30238b=_0x7cdd77||_0x586be9||'Unknown';if(_0x28f39b['includes']('download\x20file')||_0x28f39b['includes'](_0x18fe85(0x150))||_0x28f39b[_0x18fe85(_0x2be4f1._0x353b42)](_0x18fe85(_0x2be4f1._0x709fae))||_0x28f39b['includes']('fslv2')||_0x28f39b[_0x18fe85(0x12f)]('mega\x20server')||_0x4e6ddb&&_0x4e6ddb[_0x18fe85(_0x2be4f1._0x3e1f70)](_0x18fe85(_0x2be4f1._0x48fc4d))){let _0x148366=_0x18fe85(_0x2be4f1._0x1c87b1);if(_0x4e6ddb&&_0x4e6ddb['includes']('r2.dev'))_0x148366=_0x18fe85(0x129);else{if(_0x4e6ddb&&_0x4e6ddb[_0x18fe85(_0x2be4f1._0x238337)]('workers.dev'))_0x148366=_0x18fe85(0xfb);else{if(_0x28f39b[_0x18fe85(0x12f)](_0x18fe85(0x150)))_0x148366=_0x18fe85(_0x2be4f1._0xf7cea7);else{if(_0x28f39b['includes'](_0x18fe85(0x134)))_0x148366='HubCloud\x20-\x20S3';else{if(_0x28f39b[_0x18fe85(_0x2be4f1._0x353b42)](_0x18fe85(0x14e)))_0x148366='HubCloud\x20-\x20FSLv2';else{if(_0x28f39b[_0x18fe85(_0x2be4f1._0x3e1f70)]('mega\x20server'))_0x148366='HubCloud\x20-\x20Mega';}}}}}_0x349f68[_0x18fe85(0xb6)]({'source':_0x148366+'\x20'+_0x106853,'quality':_0x4d5130,'url':_0x4e6ddb,'size':_0x3c4587,'fileName':_0x30238b});}else{if(_0x28f39b['includes']('buzzserver'))try{const _0x2c3c73=yield fetch(_0x4e6ddb+_0x18fe85(0x11c),{'method':'GET','headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x4e6ddb}),'redirect':_0x18fe85(_0x2be4f1._0x24ced6)});let _0x519976=_0x2c3c73['headers'][_0x18fe85(0xe9)](_0x18fe85(0x12e))||_0x2c3c73[_0x18fe85(_0x2be4f1._0x33cf53)][_0x18fe85(_0x2be4f1._0x56423c)](_0x18fe85(0xf6));!_0x519976&&_0x2c3c73['url']&&_0x2c3c73['url']!==_0x4e6ddb+_0x18fe85(0x11c)&&(_0x519976=_0x2c3c73[_0x18fe85(_0x2be4f1._0x5d7055)]),_0x519976&&_0x349f68['push']({'source':'HubCloud\x20-\x20BuzzServer\x20'+_0x106853,'quality':_0x4d5130,'url':_0x519976,'size':_0x3c4587,'fileName':_0x30238b});}catch(_0x40c8a9){}else{if(_0x28f39b['includes']('10gbps')||_0x4e6ddb&&_0x4e6ddb[_0x18fe85(_0x2be4f1._0x353b42)](_0x18fe85(0xfe))){let _0x567c2e=_0x4e6ddb;if(_0x4e6ddb&&!_0x4e6ddb['includes'](_0x18fe85(0xfe)))try{const _0x3abc77=yield fetch(_0x4e6ddb,{'method':'GET','redirect':_0x18fe85(0x15d)}),_0x1e3af5=_0x3abc77['headers']['get'](_0x18fe85(_0x2be4f1._0x3df873));_0x1e3af5&&_0x1e3af5[_0x18fe85(0x12f)](_0x18fe85(0x104))&&(_0x567c2e=_0x1e3af5[_0x18fe85(_0x2be4f1._0x3ba68e)](_0x1e3af5['indexOf'](_0x18fe85(_0x2be4f1._0x2d94ca))+0x5));}catch(_0x8aa1e5){}_0x349f68['push']({'source':_0x18fe85(0x111)+_0x106853,'quality':_0x4d5130,'url':_0x567c2e,'size':_0x3c4587,'fileName':_0x30238b});}else{if(_0x28f39b['includes'](_0x18fe85(_0x2be4f1._0x3c3bc8))||_0x4e6ddb&&_0x4e6ddb['includes']('workers.dev'))_0x349f68['push']({'source':_0x18fe85(0x163)+_0x106853,'quality':_0x4d5130,'url':_0x4e6ddb,'size':_0x3c4587,'fileName':_0x30238b});else{if(_0x4e6ddb&&_0x4e6ddb['includes'](_0x18fe85(0xc2))){const _0x28c01d=yield pixelDrainExtractor(_0x4e6ddb);_0x349f68['push'](..._0x28c01d['map'](_0x3d631e=>__spreadProps(__spreadValues({},_0x3d631e),{'source':_0x3d631e['source']+'\x20'+_0x106853,'size':_0x3c4587,'fileName':_0x30238b})));}else{if(_0x4e6ddb&&!_0x4e6ddb['includes'](_0x18fe85(0xe4))&&_0x4e6ddb[_0x18fe85(0xd6)]('http')){const _0x269814=yield loadExtractor(_0x4e6ddb,_0x1f1731);_0x349f68[_0x18fe85(_0x2be4f1._0x1c7b8c)](..._0x269814['map'](_0x38c29f=>__spreadProps(__spreadValues({},_0x38c29f),{'quality':_0x38c29f['quality']||_0x4d5130})));}}}}}}}return _0x349f68;}catch(_0x5b5815){return[];}});}function hubCdnExtractor(_0x57f16d,_0x156a2d){const _0x82767d={_0x5bf069:0x122,_0x2204cc:0x104,_0x1ce294:0xe6,_0x5bb782:0xd7,_0x31c1eb:0xd6,_0x1c3dca:0x118,_0x29deb6:0xd6},_0x369509={_0x3ebd90:0x13d,_0x36ba1f:0x12f,_0x48296d:0x131};return __async(this,null,function*(){const _0x22b631=_0x1850;try{const _0x308477=yield fetch(_0x57f16d,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x156a2d})}),_0x25a016=yield _0x308477[_0x22b631(0xc9)](),_0x21ed9a=import_cheerio_without_node_native['default']['load'](_0x25a016);let _0x2fe83e='';_0x21ed9a('script')['each']((_0x4485ae,_0x461b7d)=>{const _0xb4d551=_0x22b631,_0x578952=_0x21ed9a(_0x461b7d)[_0xb4d551(_0x369509._0x3ebd90)]();_0x578952&&_0x578952[_0xb4d551(_0x369509._0x36ba1f)](_0xb4d551(_0x369509._0x48296d))&&(_0x2fe83e=_0x578952);});if(_0x2fe83e){const _0x3c4c92=_0x2fe83e['match'](/reurl\s*=\s*["']([^"']+)["']/);if(_0x3c4c92&&_0x3c4c92[0x1]){const _0x14caa4=_0x3c4c92[0x1];if(_0x14caa4['includes']('?r=')){const _0x3f8999=_0x14caa4['split']('?r=')['pop']();try{const _0x34087c=atob(_0x3f8999),_0x584606=_0x34087c[_0x22b631(0x101)](_0x34087c[_0x22b631(_0x82767d._0x5bf069)](_0x22b631(_0x82767d._0x2204cc))+0x5);if(_0x584606&&_0x584606[_0x22b631(0xd6)](_0x22b631(_0x82767d._0x1ce294)))return[{'source':'HubCdn','quality':0x438,'url':_0x584606}];}catch(_0xa2f973){}}else{if(_0x14caa4['includes'](_0x22b631(0x104))){const _0x577557=_0x14caa4[_0x22b631(_0x82767d._0x5bb782)](_0x22b631(0x104))['pop']();if(_0x577557&&_0x577557['startsWith'](_0x22b631(0xe6)))return[{'source':'HubCdn','quality':0x438,'url':_0x577557}];}else{if(_0x14caa4[_0x22b631(_0x82767d._0x31c1eb)](_0x22b631(_0x82767d._0x1ce294)))return[{'source':_0x22b631(0x108),'quality':0x438,'url':_0x14caa4}];}}}}const _0x57b4da=_0x25a016[_0x22b631(_0x82767d._0x1c3dca)](/r=([A-Za-z0-9+/=]+)/);if(_0x57b4da&&_0x57b4da[0x1])try{const _0x44d334=atob(_0x57b4da[0x1]),_0x330cb5=_0x44d334['substring'](_0x44d334['lastIndexOf'](_0x22b631(0x104))+0x5);if(_0x330cb5&&_0x330cb5[_0x22b631(_0x82767d._0x29deb6)]('http'))return[{'source':_0x22b631(0x108),'quality':0x438,'url':_0x330cb5}];}catch(_0x4ec171){}return[];}catch(_0x99eac8){return[];}});}function loadExtractor(_0x37f613){const _0xc43b91={_0x651fc2:0xbb,_0x1ead00:0x141,_0x2873de:0x155,_0x45e8ef:0xe8,_0xfe189f:0x12f,_0x3d31bb:0x15a,_0xc56c1f:0x12f,_0x440e78:0xdc,_0x224390:0x12f,_0xf7ef73:0x165};return __async(this,arguments,function*(_0x43a854,_0x38a20c=MAIN_URL){const _0xd5fd69=_0x1850;try{const _0x7e64e9=new URL(_0x43a854)['hostname'],_0x32c947=_0x43a854['includes'](_0xd5fd69(_0xc43b91._0x651fc2))||_0x7e64e9['includes'](_0xd5fd69(_0xc43b91._0x1ead00))||_0x7e64e9['includes'](_0xd5fd69(_0xc43b91._0x2873de))||_0x7e64e9[_0xd5fd69(0x12f)](_0xd5fd69(_0xc43b91._0x45e8ef))||_0x7e64e9[_0xd5fd69(_0xc43b91._0xfe189f)]('bloggingvector')||_0x7e64e9['includes']('ampproject.org');if(_0x32c947){const _0x3c4d34=yield getRedirectLinks(_0x43a854);if(_0x3c4d34&&_0x3c4d34!==_0x43a854)return yield loadExtractor(_0x3c4d34,_0x43a854);return[];}if(_0x7e64e9['includes']('hubcloud'))return yield hubCloudExtractor(_0x43a854,_0x38a20c);if(_0x7e64e9['includes'](_0xd5fd69(_0xc43b91._0x3d31bb)))return yield hubCdnExtractor(_0x43a854,_0x38a20c);if(_0x7e64e9['includes']('hblinks')||_0x7e64e9[_0xd5fd69(_0xc43b91._0xc56c1f)]('hubstream.dad'))return yield hbLinksExtractor(_0x43a854);if(_0x7e64e9['includes']('hubstream')||_0x7e64e9['includes']('vidstack'))return yield vidStackExtractor(_0x43a854);if(_0x7e64e9[_0xd5fd69(0x12f)]('pixeldrain'))return yield pixelDrainExtractor(_0x43a854);if(_0x7e64e9[_0xd5fd69(0x12f)]('streamtape'))return yield streamTapeExtractor(_0x43a854);if(_0x7e64e9['includes'](_0xd5fd69(_0xc43b91._0x440e78)))return[{'source':_0xd5fd69(0x164),'quality':0x438,'url':_0x43a854}];if(_0x7e64e9[_0xd5fd69(_0xc43b91._0x224390)]('hubdrive')){const _0xd2fc4f=yield fetch(_0x43a854,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x38a20c})}),_0x2bb502=yield _0xd2fc4f['text'](),_0x52fa9f=import_cheerio_without_node_native['default'][_0xd5fd69(_0xc43b91._0xf7ef73)](_0x2bb502)('.btn.btn-primary.btn-user.btn-success1.m-1')[_0xd5fd69(0x147)](_0xd5fd69(0x14a));if(_0x52fa9f)return yield loadExtractor(_0x52fa9f,_0x43a854);}return[];}catch(_0x42387d){return[];}});}function search(_0x4050e0){const _0x18a073={_0x361da1:0xd7,_0xebeed8:0xe3,_0x3aebc6:0xf8};return __async(this,null,function*(){const _0x19d7d5={_0x147b22:0x107,_0x309bdf:0xd5,_0x11cdb1:0xd6,_0x4c4e6c:0xb0},_0x34c9c6=_0x1850,_0x394053=new Date()['toISOString']()[_0x34c9c6(_0x18a073._0x361da1)]('T')[0x0],_0x54245b=_0x34c9c6(_0x18a073._0xebeed8)+encodeURIComponent(_0x4050e0)+'&query_by=post_title,category&query_by_weights=4,2&sort_by=sort_by_date:desc&limit=15&highlight_fields=none&use_cache=true&page=1&analytics_tag='+_0x394053,_0x3ce9c9=yield fetch(_0x54245b,{'headers':HEADERS}),_0x4de085=yield _0x3ce9c9['json']();if(!_0x4de085||!_0x4de085[_0x34c9c6(0x119)])return[];return _0x4de085[_0x34c9c6(0x119)][_0x34c9c6(_0x18a073._0x3aebc6)](_0xdf65e0=>{const _0x540e6a=_0x34c9c6,_0x4b6532=_0xdf65e0['document'],_0x630153=_0x4b6532[_0x540e6a(_0x19d7d5._0x147b22)],_0x59fa7c=_0x630153[_0x540e6a(0x118)](/\((\d{4})\)|\b(\d{4})\b/),_0x5a819d=_0x59fa7c?parseInt(_0x59fa7c[0x1]||_0x59fa7c[0x2]):null;let _0x352428=_0x4b6532[_0x540e6a(_0x19d7d5._0x309bdf)];return _0x352428&&_0x352428[_0x540e6a(_0x19d7d5._0x11cdb1)]('/')&&(_0x352428=''+MAIN_URL+_0x352428),{'title':_0x630153,'url':_0x352428,'poster':_0x4b6532[_0x540e6a(_0x19d7d5._0x4c4e6c)],'year':_0x5a819d};});});}function getDownloadLinks(_0x37ecb2){const _0x244e8d={_0x51d6fd:0x159,_0x53f372:0x165,_0x903b65:0x130,_0x1d8417:0x12f,_0x3807b2:0x153,_0x2907d7:0xf8,_0x2a8202:0xe9,_0x5ebc1a:0xcf,_0x5becc8:0x149,_0xb58748:0xfd},_0x4f0384={_0x3fb8c6:0xc1,_0x2cf72e:0x12f,_0x5eb2f9:0xca},_0x2e7d99={_0x1909a6:0xb6},_0x2d15bc={_0x294953:0xbf,_0x4fc8a9:0xf8,_0x4be1b3:0xb6,_0x272b27:0xe9},_0x2d5f59={_0x3bab7c:0x113,_0x4f77b6:0x12f},_0x5f0d72={_0x3bee9e:0x14a,_0x22c9f2:0xdc,_0x1f1e6d:0x12f};return __async(this,null,function*(){const _0x518efc={_0x462412:0xc1},_0x5165ce={_0x438d3b:0xd3,_0x1a3700:0xbd},_0x2f3123=_0x1850,_0x491a83=yield getCurrentDomain();if(_0x37ecb2['includes']('hdhub4u.'))try{const _0x5aa80e=new URL(_0x37ecb2),_0x191c64=new URL(_0x491a83);_0x5aa80e[_0x2f3123(0x159)]=_0x191c64[_0x2f3123(_0x244e8d._0x51d6fd)],_0x37ecb2=_0x5aa80e['toString']();}catch(_0x14960f){}const _0x2977be=yield fetch(_0x37ecb2,{'headers':__spreadProps(__spreadValues({},HEADERS),{'Referer':_0x491a83+'/'})}),_0x203f07=yield _0x2977be['text'](),_0x346a06=import_cheerio_without_node_native2['default'][_0x2f3123(_0x244e8d._0x53f372)](_0x203f07),_0x1aac06=_0x346a06(_0x2f3123(_0x244e8d._0x903b65))['text'](),_0xfa4a85=_0x1aac06[_0x2f3123(0x113)]()[_0x2f3123(_0x244e8d._0x1d8417)](_0x2f3123(0x152));if(_0xfa4a85){const _0x774e1a=_0x346a06(_0x2f3123(_0x244e8d._0x3807b2))['filter']((_0x3d8871,_0x4e83cc)=>_0x346a06(_0x4e83cc)[_0x2f3123(0xc9)]()[_0x2f3123(0x118)](/480|720|1080|2160|4K/i)),_0x44a955=_0x346a06(_0x2f3123(0xf4))[_0x2f3123(0x161)]((_0x3a4cf4,_0x275fe2)=>{const _0x58f8c1=_0x2f3123,_0x370ccf=_0x346a06(_0x275fe2)['attr'](_0x58f8c1(_0x5f0d72._0x3bee9e));return _0x370ccf&&(_0x370ccf['includes'](_0x58f8c1(_0x5f0d72._0x22c9f2))||_0x370ccf[_0x58f8c1(_0x5f0d72._0x1f1e6d)]('hubstream'));}),_0x15f8f2=[...new Set([..._0x774e1a[_0x2f3123(_0x244e8d._0x2907d7)]((_0x1f7992,_0x12e5c0)=>_0x346a06(_0x12e5c0)['attr'](_0x2f3123(0x14a)))['get'](),..._0x44a955['map']((_0x3c1e41,_0x189e8f)=>_0x346a06(_0x189e8f)[_0x2f3123(0x147)](_0x2f3123(0x14a)))[_0x2f3123(_0x244e8d._0x2a8202)]()])],_0x222f1b=yield Promise[_0x2f3123(_0x244e8d._0x5ebc1a)](_0x15f8f2[_0x2f3123(0xf8)](_0x69d139=>loadExtractor(_0x69d139,_0x37ecb2))),_0x56430f=_0x222f1b['flat'](),_0x34f06a=new Set(),_0x57c441=_0x56430f[_0x2f3123(0x161)](_0x143ac2=>{const _0x4076c7=_0x2f3123;var _0x304ddb;if(!_0x143ac2[_0x4076c7(0xc1)]||_0x143ac2[_0x4076c7(0xc1)]['includes']('.zip')||((_0x304ddb=_0x143ac2[_0x4076c7(0x160)])==null?void 0x0:_0x304ddb[_0x4076c7(_0x2d5f59._0x3bab7c)]()[_0x4076c7(_0x2d5f59._0x4f77b6)]('.zip')))return![];if(_0x34f06a['has'](_0x143ac2['url']))return![];return _0x34f06a['add'](_0x143ac2['url']),!![];});return{'finalLinks':_0x57c441,'isMovie':_0xfa4a85};}else{const _0x12e458=new Map(),_0x3b176b=[];_0x346a06('h3,\x20h4')['each']((_0x49cf27,_0x8a1934)=>{const _0x389fd7=_0x2f3123,_0xe47dfc=_0x346a06(_0x8a1934),_0x1f94a4=_0xe47dfc['text'](),_0x55ff00=_0xe47dfc[_0x389fd7(_0x2d15bc._0x294953)]('a'),_0x590ec1=_0x55ff00[_0x389fd7(_0x2d15bc._0x4fc8a9)]((_0x29bfd9,_0xb4c1e4)=>_0x346a06(_0xb4c1e4)[_0x389fd7(0x147)](_0x389fd7(0x14a)))['get'](),_0x45ebb7=_0x55ff00[_0x389fd7(0xe9)]()[_0x389fd7(0x11f)](_0x9ebf90=>_0x346a06(_0x9ebf90)['text']()[_0x389fd7(0x118)](/1080|720|4K|2160/i));if(_0x45ebb7){_0x3b176b[_0x389fd7(_0x2d15bc._0x4be1b3)](..._0x590ec1);return;}const _0x1f5588=_0x1f94a4['match'](/(?:EPiSODE\s*(\d+)|E(\d+))/i);if(_0x1f5588){const _0x5cd6c6=parseInt(_0x1f5588[0x1]||_0x1f5588[0x2]);if(!_0x12e458['has'](_0x5cd6c6))_0x12e458[_0x389fd7(0x127)](_0x5cd6c6,[]);_0x12e458['get'](_0x5cd6c6)[_0x389fd7(_0x2d15bc._0x4be1b3)](..._0x590ec1);let _0x492e9c=_0xe47dfc[_0x389fd7(0xed)]();while(_0x492e9c['length']&&_0x492e9c[_0x389fd7(_0x2d15bc._0x272b27)](0x0)['tagName']!=='hr'){const _0x34c9f5=_0x492e9c[_0x389fd7(0xbf)]('a[href]')[_0x389fd7(_0x2d15bc._0x4fc8a9)]((_0x1e5376,_0x2755f6)=>_0x346a06(_0x2755f6)[_0x389fd7(0x147)]('href'))[_0x389fd7(0xe9)]();_0x12e458[_0x389fd7(_0x2d15bc._0x272b27)](_0x5cd6c6)['push'](..._0x34c9f5),_0x492e9c=_0x492e9c['next']();}}});_0x3b176b[_0x2f3123(_0x244e8d._0x5becc8)]>0x0&&(yield Promise['all'](_0x3b176b[_0x2f3123(_0x244e8d._0x2907d7)](_0x109f62=>__async(this,null,function*(){const _0x406122={_0x5cad47:0x147,_0x575e3c:0x14a,_0x6b4aaf:0xb6},_0x319fd8=_0x2f3123;try{const _0x325ae7=yield getRedirectLinks(_0x109f62);if(!_0x325ae7)return;const _0x588f94=yield fetch(_0x325ae7,{'headers':HEADERS}),_0x3b516e=yield _0x588f94['text'](),_0xe62e14=import_cheerio_without_node_native2['default'][_0x319fd8(0x165)](_0x3b516e);_0xe62e14(_0x319fd8(_0x5165ce._0x438d3b))[_0x319fd8(_0x5165ce._0x1a3700)]((_0x475367,_0x238ad0)=>{const _0x26dcb7=_0x319fd8,_0x36f923=_0xe62e14(_0x238ad0)[_0x26dcb7(0xc9)](),_0x404524=_0xe62e14(_0x238ad0)[_0x26dcb7(_0x406122._0x5cad47)](_0x26dcb7(_0x406122._0x575e3c)),_0x5d2f74=_0x36f923['match'](/Episode\s*(\d+)/i);if(_0x5d2f74&&_0x404524){const _0x21d8e0=parseInt(_0x5d2f74[0x1]);if(!_0x12e458['has'](_0x21d8e0))_0x12e458['set'](_0x21d8e0,[]);_0x12e458['get'](_0x21d8e0)[_0x26dcb7(_0x406122._0x6b4aaf)](_0x404524);}});}catch(_0x319d2a){}}))));const _0x1e0a42=[];_0x12e458['forEach']((_0x1387a7,_0x4127e4)=>{const _0x47f5e8=_0x2f3123,_0x1f018c=[...new Set(_0x1387a7)];_0x1e0a42[_0x47f5e8(_0x2e7d99._0x1909a6)](..._0x1f018c[_0x47f5e8(0xf8)](_0x374732=>({'url':_0x374732,'episode':_0x4127e4})));});const _0xe76bd9=yield Promise['all'](_0x1e0a42['map'](_0x11c525=>__async(this,null,function*(){const _0xac4085=_0x2f3123;try{const _0x280a57=yield loadExtractor(_0x11c525[_0xac4085(_0x518efc._0x462412)],_0x37ecb2);return _0x280a57['map'](_0x58e66c=>__spreadProps(__spreadValues({},_0x58e66c),{'episode':_0x11c525['episode']}));}catch(_0x16778a){return[];}}))),_0x2b3267=_0xe76bd9[_0x2f3123(_0x244e8d._0xb58748)](),_0x397162=new Set(),_0x19b4f0=_0x2b3267['filter'](_0x344da7=>{const _0x5cd943=_0x2f3123;if(!_0x344da7['url']||_0x344da7[_0x5cd943(_0x4f0384._0x3fb8c6)][_0x5cd943(_0x4f0384._0x2cf72e)](_0x5cd943(_0x4f0384._0x5eb2f9)))return![];if(_0x397162[_0x5cd943(0xea)](_0x344da7[_0x5cd943(_0x4f0384._0x3fb8c6)]))return![];return _0x397162[_0x5cd943(0x10b)](_0x344da7[_0x5cd943(_0x4f0384._0x3fb8c6)]),!![];});return{'finalLinks':_0x19b4f0,'isMovie':_0xfa4a85};}});}function getStreams(_0x6fb123,_0x44e130=_0x4cfe8c(0x152),_0xe589e2=null,_0x23aa96=null){const _0x2e7077={_0x18e96e:0x120,_0xc53699:0xcd,_0x4f5e33:0x137,_0x450da4:0xc1},_0x7ef8f={_0x4ba768:0xe0,_0x5d0aac:0xd0,_0x2ba8df:0xb3,_0x46fc7b:0xaa,_0x1fc576:0xaa,_0x8bc9a3:0x138,_0x2eca56:0x13e,_0x36a4bb:0x10f,_0x37b3e0:0xcc,_0x5e29c4:0x169,_0x3edd6f:0x15b};return __async(this,null,function*(){const _0x5aa329=_0x1850;console[_0x5aa329(_0x2e7077._0x18e96e)](_0x5aa329(_0x2e7077._0xc53699)+_0x6fb123+_0x5aa329(0x146)+_0x44e130);try{const _0x2fa81d=yield getTMDBDetails(_0x6fb123,_0x44e130);console['log'](_0x5aa329(0xc3)+_0x2fa81d['title']+'\x22\x20('+(_0x2fa81d[_0x5aa329(0xee)]||'N/A')+')');const _0x5add83=_0x44e130==='tv'&&_0xe589e2?_0x2fa81d['title']+_0x5aa329(_0x2e7077._0x4f5e33)+_0xe589e2:_0x2fa81d['title'],_0x424e15=yield search(_0x5add83);if(_0x424e15[_0x5aa329(0x149)]===0x0)return[];const _0x250433=findBestTitleMatch(_0x2fa81d,_0x424e15,_0x44e130,_0xe589e2),_0x8b1a29=_0x250433||__englishHdhubSelectFallback(_0x424e15,_0x2fa81d['title'],_0x44e130,_0xe589e2);if(!_0x8b1a29)return[];console[_0x5aa329(0x120)](_0x5aa329(0x135)+_0x8b1a29['title']+_0x5aa329(0xf1)+_0x8b1a29[_0x5aa329(_0x2e7077._0x450da4)]+')');const _0x256b26=yield getDownloadLinks(_0x8b1a29[_0x5aa329(0xc1)]),_0x163c3e=_0x256b26[_0x5aa329(0xad)];let _0x3cfcfe=_0x163c3e;_0x44e130==='tv'&&_0x23aa96!==null&&(_0x3cfcfe=_0x163c3e['filter'](_0x4f12c5=>_0x4f12c5[_0x5aa329(0x11e)]===_0x23aa96));const _0x1504d4=_0x3cfcfe[_0x5aa329(0xf8)](_0x4c046b=>{const _0x17024b=_0x5aa329;let _0x50686f=_0x4c046b['fileName']&&_0x4c046b[_0x17024b(_0x7ef8f._0x4ba768)]!==_0x17024b(_0x7ef8f._0x5d0aac)?_0x4c046b['fileName']:_0x2fa81d['title'];_0x44e130==='tv'&&_0xe589e2&&_0x23aa96&&(_0x50686f=_0x2fa81d[_0x17024b(_0x7ef8f._0x2ba8df)]+'\x20S'+String(_0xe589e2)[_0x17024b(_0x7ef8f._0x46fc7b)](0x2,'0')+'E'+String(_0x23aa96)[_0x17024b(_0x7ef8f._0x1fc576)](0x2,'0'));const _0x53d15f=extractServerName(_0x4c046b['source']);let _0x4acaf9='Unknown';if(typeof _0x4c046b['quality']===_0x17024b(0x10a)&&_0x4c046b['quality']>0x0){if(_0x4c046b['quality']>=0x870)_0x4acaf9='4K';else{if(_0x4c046b['quality']>=0x438)_0x4acaf9=_0x17024b(_0x7ef8f._0x8bc9a3);else{if(_0x4c046b['quality']>=0x2d0)_0x4acaf9=_0x17024b(0xf0);else{if(_0x4c046b[_0x17024b(0x10f)]>=0x1e0)_0x4acaf9='480p';}}}}else typeof _0x4c046b['quality']===_0x17024b(_0x7ef8f._0x2eca56)&&(_0x4acaf9=_0x4c046b[_0x17024b(_0x7ef8f._0x36a4bb)]);return{'name':_0x17024b(_0x7ef8f._0x37b3e0)+_0x53d15f,'title':_0x50686f,'url':_0x4c046b[_0x17024b(0xc1)],'quality':_0x4acaf9,'size':formatBytes(_0x4c046b['size']),'headers':_0x4c046b[_0x17024b(_0x7ef8f._0x5e29c4)]||void 0x0,'provider':_0x17024b(_0x7ef8f._0x3edd6f)};}),_0xa1c74={'4K':0x4,'1080p':0x2,'720p':0x1,'480p':0x0,'Unknown':-0x2};return _0x1504d4['sort']((_0x141dca,_0x5b99ad)=>(_0xa1c74[_0x5b99ad['quality']]||-0x3)-(_0xa1c74[_0x141dca[_0x5aa329(0x10f)]]||-0x3));}catch(_0x11c64c){return console['error']('[HDHub4u]\x20Scraping\x20error:\x20'+_0x11c64c['message']),[];}});}module[_0x4cfe8c(0x151)]={'getStreams':getStreams};
+
+
+// ---------------------------------------------------------------------------
+// Appended (not part of the vendored file above): unifies this provider's
+// stream Name/Description with the upstream English Stremio addon's
+// src/stream-template.js layout, applied there at its HTTP boundary and here
+// as a post-processing wrap around the vendored getStreams, since Nuvio
+// scrapers have no such boundary and this file's obfuscated internals aren't
+// meant to be hand-edited:
+//   Name:        {{cached ? "\u26a1\ufe0f " : ""}}{{indexer}}
+//   Description: English{{container ? " \u2022 " + container : ""}}{{resolution ? " \u2022 " + resolution : ""}}
+// ---------------------------------------------------------------------------
+(function () {
+  var __NUVIO_PROVIDER_NAME__ = "HDHub4u";
+  var __streamContainerPattern = /\.(mp4|mkv|m3u8|avi|mov|webm)(?:$|[?#])/i;
+  var __streamResolutionPattern = /\b(2160p|4k|1080p|720p|480p|360p)\b/i;
+
+  function __extractStreamContainer(url) {
+    var match = String(url || "").match(__streamContainerPattern);
+    return match ? match[1].toLowerCase() : null;
+  }
+
+  function __extractStreamResolution(stream) {
+    // Always regex-extracts just the resolution token instead of trusting
+    // stream.quality verbatim when present -- some scrapers here set
+    // quality to a whole descriptive string ("4k | BluRay | x265/HEVC"),
+    // which used to pass straight through onto the card unfiltered.
+    var text = (stream.quality || "") + " " + (stream.title || "") + " " + (stream.name || "");
+    var match = text.match(__streamResolutionPattern);
+    if (!match) return null;
+    return match[1].toLowerCase() === "4k" ? "2160p" : match[1].toLowerCase();
+  }
+
+  function __formatByteSize(bytes) {
+    var n = Number(bytes);
+    if (!isFinite(n) || n <= 0) return null;
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var value = n;
+    var unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return (Math.round(value * 10) / 10) + " " + units[unitIndex];
+  }
+
+  // Some vendored scrapers here (VidEasy) put a whole multi-line
+  // description into `size` instead of an actual file size. Only a short
+  // "123 MB" / "1.5 GB" shaped string (or a raw byte number, handled above)
+  // is trusted; anything else is dropped rather than shown verbatim.
+  var __sizeStringPattern = /^\s*\d+(\.\d+)?\s*(B|KB|MB|GB|TB)\s*$/i;
+  function __sanitizeSizeString(value) {
+    if (typeof value !== "string") return null;
+    return __sizeStringPattern.test(value) ? value.trim() : null;
+  }
+
+  // Nuvio's stream card renders `quality`/`size` directly, not `title` --
+  // every provider here was setting `quality` to whatever raw, differently-
+  // shaped string its own vendored scraper produced (a bare "1080p", or
+  // "1080p | BluRay | x264/AVC", or an unformatted byte count in `size`),
+  // which is why every provider's cards looked different from every other
+  // provider's. `quality` now always becomes just the clean resolution
+  // token already extracted above (or null), and `name` always becomes
+  // just this provider's own display name instead of whatever descriptive
+  // per-stream text the scraper happened to put there, so every provider
+  // renders the same way: a fixed bold name, a clean quality • size line.
+  function __applyStreamTemplate(stream) {
+    var container = __extractStreamContainer(stream.url);
+    var resolution = __extractStreamResolution(stream);
+    var cached = stream.__cached === true || stream.cached === true;
+    var parts = ["English", container, resolution].filter(Boolean);
+
+    var out = {};
+    for (var key in stream) if (Object.prototype.hasOwnProperty.call(stream, key)) out[key] = stream[key];
+    out.name = (cached ? "\u26a1\ufe0f " : "") + __NUVIO_PROVIDER_NAME__;
+    out.quality = resolution || null;
+    out.size = typeof stream.size === "number" ? __formatByteSize(stream.size) : __sanitizeSizeString(stream.size);
+    out.title = parts.length > 0 ? parts.join(" \u2022 ") : " ";
+    return out;
+  }
+
+  // These vendored scrapers hand back every link they find, including
+  // expired/geo-blocked embeds that never play. Latino's providers already
+  // probe each candidate before returning it (see latino/src/providers/*);
+  // English never did, so its cards looked more populated but were less
+  // reliable to actually press play on. Mirrors the same Range/HEAD-based
+  // playability probe here.
+  var __streamProbeRangeBytes = 2048;
+  var __streamProbeTimeoutMs = 1500;
+  // Was 4. Nuvio itself runs up to 3 providers concurrently, and several of
+  // this repo's own providers fan out 10-50+ of their own requests while
+  // scraping a single title -- on a real device that adds up to enough
+  // simultaneous open connections to be a plausible crash trigger. Lower
+  // per-provider probe concurrency trades a little probing speed for a
+  // meaningfully smaller connection/memory footprint at any given moment.
+  var __streamProbeConcurrency = 2;
+  var __hasTimers = typeof setTimeout === "function";
+
+  function __fetchWithTimeout(url, options, timeoutMs) {
+    var request = fetch(url, options);
+    if (!__hasTimers) return request;
+    var timeoutId;
+    var timeout = new Promise(function (resolve, reject) {
+      timeoutId = setTimeout(function () {
+        reject(new Error("Fetch timeout after " + timeoutMs + "ms: " + url));
+      }, timeoutMs);
+    });
+    return Promise.race([request, timeout]).then(
+      function (res) {
+        clearTimeout(timeoutId);
+        return res;
+      },
+      function (err) {
+        clearTimeout(timeoutId);
+        throw err;
+      }
+    );
+  }
+
+  function __isHtmlProbeResponse(res, text) {
+    var contentType = ((res.headers && res.headers.get && res.headers.get("content-type")) || "").toLowerCase();
+    if (contentType.indexOf("text/html") !== -1) return true;
+    return /^\s*<(!doctype|html)/i.test(text || "");
+  }
+
+  function __hasPlaylistEntries(body) {
+    return body.indexOf("#EXT-X-STREAM-INF") !== -1 || body.indexOf("#EXTINF") !== -1;
+  }
+
+  function __firstPlaylistEntryUrl(body, manifestUrl) {
+    var lines = String(body || "").split(/\r?\n/);
+    for (var i = 0; i < lines.length; i += 1) {
+      var trimmed = lines[i].trim();
+      if (!trimmed || trimmed.indexOf("#") === 0) continue;
+      try {
+        return new URL(trimmed, manifestUrl).toString();
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // The raw CDN URLs these scrapers return are often hotlink-protected --
+  // the actual player only gets through because it sends the Referer/
+  // Origin/User-Agent the stream object carries in `headers`. Probing
+  // without them produced false negatives (a real, playable 2160p VidEasy
+  // stream 403'd on its segment host and was wrongly dropped) until this
+  // was caught by comparing a probed-to-zero run against the same title
+  // fetched with and without those headers. Every probe request below
+  // merges them in, the same way the real player would.
+  function __mergeProbeHeaders(extraHeaders, extra) {
+    var headers = { Range: "bytes=0-" + (__streamProbeRangeBytes - 1) };
+    if (extraHeaders) {
+      for (var key in extraHeaders) {
+        if (Object.prototype.hasOwnProperty.call(extraHeaders, key)) headers[key] = extraHeaders[key];
+      }
+    }
+    if (extra) {
+      for (var key2 in extra) {
+        if (Object.prototype.hasOwnProperty.call(extra, key2)) headers[key2] = extra[key2];
+      }
+    }
+    return headers;
+  }
+
+  // Some CDNs (video-downloads.googleusercontent.com, seen on UHDMovies)
+  // ignore the Range header entirely and respond 200 with the *whole* file
+  // instead of 206 with just the requested slice. res.text() on that
+  // response means buffering an entire multi-hundred-MB/GB video into a JS
+  // string, which is what was actually causing English titles to spin
+  // forever -- not a network hang, a probe silently trying to download the
+  // whole movie before it could decide whether the movie was playable. Only
+  // read the body when it's actually bounded: a real 206 (the Range was
+  // honoured, so the body is just the requested slice) or a Content-Length
+  // small enough to be a manifest/error page rather than a video file.
+  var __streamProbeMaxBodyBytes = 2 * 1024 * 1024;
+  function __shouldReadProbeBody(res) {
+    if (res.status === 206) return true;
+    var lengthHeader = res.headers && res.headers.get && res.headers.get("content-length");
+    var length = lengthHeader ? parseInt(lengthHeader, 10) : NaN;
+    return !isNaN(length) && length <= __streamProbeMaxBodyBytes;
+  }
+
+  function __probeHlsPlayback(body, manifestUrl, depth, extraHeaders) {
+    var resourceUrl = __firstPlaylistEntryUrl(body, manifestUrl);
+    if (!resourceUrl) return Promise.resolve(false);
+    if (depth >= 1) {
+      return __fetchWithTimeout(resourceUrl, { method: "HEAD", headers: extraHeaders || {} }, __streamProbeTimeoutMs)
+        .then(function (res) { return [401, 403, 404, 410, 451].indexOf(res.status) === -1; })
+        .catch(function () { return true; });
+    }
+    return __fetchWithTimeout(resourceUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
+      .then(function (res) {
+        if (!res.ok && res.status !== 206) return false;
+        if (!__shouldReadProbeBody(res)) return true;
+        return res.text().then(function (text) {
+          if (__isHtmlProbeResponse(res, text)) return false;
+          if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, resourceUrl, depth + 1, extraHeaders);
+          return text.length > 0;
+        });
+      })
+      .catch(function () { return false; });
+  }
+
+  function __probeStreamPlayable(streamUrl, extraHeaders) {
+    return __fetchWithTimeout(streamUrl, { headers: __mergeProbeHeaders(extraHeaders) }, __streamProbeTimeoutMs)
+      .then(function (res) {
+        if ([401, 403, 404, 410, 451].indexOf(res.status) !== -1) return false;
+        if (!res.ok && res.status !== 206) return false;
+        if (!__shouldReadProbeBody(res)) return true;
+        return res.text().then(function (text) {
+          if (__isHtmlProbeResponse(res, text)) return false;
+          if (__hasPlaylistEntries(text)) return __probeHlsPlayback(text, streamUrl, 0, extraHeaders);
+          return text.length > 0;
+        });
+      })
+      .catch(function () { return false; });
+  }
+
+  // Nuvio's sandbox has no setTimeout/clearTimeout (see README), so a probe
+  // fetch that never settles -- a blackholed CDN, a host that accepts the
+  // connection and never answers -- can't be given a real timeout. Waiting
+  // for every single item to settle before resolving meant one such stream
+  // stalled this provider's getStreams() forever, leaving the whole English
+  // list spinning with nothing shown. Once enough playable streams have
+  // already been found to satisfy maxResults (the same cap __finalizeStreams
+  // applies below), stop waiting on the rest -- their eventual results, if
+  // any, are discarded rather than awaited.
+  function __mapWithConcurrency(items, concurrency, worker, maxResults) {
+    return new Promise(function (resolve) {
+      if (items.length === 0) {
+        resolve([]);
+        return;
+      }
+      var results = [];
+      var cursor = 0;
+      var doneCount = 0;
+      var settled = false;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        resolve(results);
+      }
+      function runNext() {
+        while (cursor < items.length) {
+          var index = cursor;
+          cursor += 1;
+          Promise.resolve()
+            .then(function () { return worker(items[index], index); })
+            .catch(function () { return null; })
+            .then(function (result) {
+              if (settled) return;
+              if (result) results.push(result);
+              doneCount += 1;
+              if (maxResults && results.length >= maxResults) finish();
+              else if (doneCount === items.length) finish();
+              else runNext();
+            });
+          return;
+        }
+      }
+      var runners = Math.max(1, Math.min(concurrency, items.length));
+      for (var i = 0; i < runners; i += 1) runNext();
+    });
+  }
+
+  // Caps this provider's own contribution to the merged stream list -- with
+  // eight English providers each returning everything they find, the
+  // combined list Nuvio shows can otherwise run into the dozens for one
+  // title. Known resolutions sort first (higher first), everything else
+  // keeps the order probing produced it in.
+  var __maxStreamsPerProvider = 2;
+  var __streamResolutionRankMap = { "2160p": 4, "1080p": 3, "720p": 2, "480p": 1, "360p": 0 };
+  function __finalizeStreams(streams) {
+    return streams.filter(function (s) { return s != null; })
+      .map(function (stream, index) { return { stream: stream, index: index }; })
+      .sort(function (a, b) {
+        var rankA = Object.prototype.hasOwnProperty.call(__streamResolutionRankMap, a.stream.quality) ? __streamResolutionRankMap[a.stream.quality] : -1;
+        var rankB = Object.prototype.hasOwnProperty.call(__streamResolutionRankMap, b.stream.quality) ? __streamResolutionRankMap[b.stream.quality] : -1;
+        if (rankA !== rankB) return rankB - rankA;
+        return a.index - b.index;
+      })
+      .slice(0, __maxStreamsPerProvider)
+      .map(function (entry) { return entry.stream; });
+  }
+
+  function __wrapGetStreams(original) {
+    return function (tmdbId, mediaType, seasonNum, episodeNum) {
+      return Promise.resolve(original(tmdbId, mediaType, seasonNum, episodeNum)).then(function (streams) {
+        var templated = (streams || []).map(__applyStreamTemplate);
+        return __mapWithConcurrency(templated, __streamProbeConcurrency, function (stream) { return __probeStreamPlayable(stream.url, stream.headers).then(function (playable) { return playable ? stream : null; }); }).then(__finalizeStreams);
+      });
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports && typeof module.exports.getStreams === "function") {
+    module.exports.getStreams = __wrapGetStreams(module.exports.getStreams);
+  } else if (typeof global !== "undefined" && typeof global.getStreams === "function") {
+    global.getStreams = __wrapGetStreams(global.getStreams);
+  }
+})();
